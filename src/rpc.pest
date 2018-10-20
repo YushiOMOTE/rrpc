@@ -1,0 +1,75 @@
+Char = _{ ASCII_ALPHANUMERIC | "_" }
+Name = _{ (ASCII_ALPHA ~ Char* | "_" ~ Char+) }
+
+Identifier = @{ Name }
+
+Type = @{ Name }
+
+Pattern = @{ Name }
+
+Path = @{ ((Name | "..") ~ "::")* ~ Name }
+
+Use = { "use " ~ Path ~ ";" }
+
+Value = @{ ("{" ~ Value ~ "}") | (!"}" ~ ANY)* }
+Attribute = _{ "{" ~ Value ~ "}" }
+
+Field = {
+   CommentLine? ~
+   Identifier ~ ":" ~ Type ~ Attribute? ~ ","
+}
+
+Variant = {
+   CommentLine? ~
+   Identifier ~ Attribute? ~ ","
+}
+
+Argument = {
+   Identifier ~ ":" ~ Type
+}
+
+ReturnType = {
+   "(" ~ (Type ~ ",")* ~ Type? ~ ")" |
+   Type
+}
+
+Function = {
+   CommentLine? ~
+   "fn " ~ Identifier ~ "(" ~ (Argument ~ ",")* ~ Argument? ~ ")" ~ "->" ~ ReturnType ~ ";"
+}
+
+Struct = {
+   CommentLine? ~
+   "struct " ~ Identifier ~ "{" ~ Field* ~ "}"
+}
+
+Enum = {
+   CommentLine? ~
+   "enum " ~ Identifier ~ "(" ~ Type ~ ")" ~ "{" ~ Variant* ~ "}"
+}
+
+Interface = {
+   CommentLine? ~
+   "interface " ~ Identifier ~ "(" ~ Pattern ~ ")" ~ "{" ~ Function* ~ "}"
+}
+
+Definitions = _{
+   Struct |
+   Enum |
+   Interface
+}
+
+Module = {
+   CommentLine? ~
+   "mod " ~ Identifier ~ "{" ~ Definitions* ~ "}"
+}
+
+File = _{
+     SOI ~ Use* ~ Module ~ EOI
+}
+
+Comment = { (!NEWLINE ~ ANY)* }
+CommentLine = ${ "///" ~ Comment ~ NEWLINE }
+
+WHITESPACE = _{ " " | "\r" | "\n" | "\t" }
+COMMENT = _{ "//" ~ !("/") ~ (!NEWLINE ~ ANY)* }
