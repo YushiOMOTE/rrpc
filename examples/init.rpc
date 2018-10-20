@@ -6,7 +6,7 @@ mod name {
         /// comment
         member: u32 {value},
         /// comment
-        member: string {value},
+        member: vector<u32> {value},
     }
 
     /// comment

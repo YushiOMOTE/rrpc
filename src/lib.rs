@@ -193,19 +193,43 @@ fn parse_module(p: Pair<Rule>, types: &mut TypeResolver) -> Result<Value> {
     }))
 }
 
+fn resolve_generic_type(p: Pair<Rule>, types: &TypeResolver) -> Result<Value> {
+    match get!(p, Rule::Template).ok() {
+        Some(template) => {
+            let mut tys = Vec::new();
+
+            for gty in getm!(template, Rule::GenericType) {
+                tys.push(resolve_generic_type(gty, types)?);
+            }
+
+            let ident = get!(template, Rule::Identifier)?.as_str();
+
+            Ok(json!({
+                "name": ident,
+                "type": "template",
+                "subtypes": tys,
+            }))
+        }
+        None => {
+            let ty = get!(p, Rule::Type)?;
+            types.resolve(&ty)
+        }
+    }
+}
+
 fn parse_struct(p: Pair<Rule>, types: &mut TypeResolver) -> Result<(String, Value)> {
     let mut fields = Vec::new();
 
     for f in getm!(p, Rule::Field) {
         let comment = get_comment(&f).ok();
         let ident = get!(f, Rule::Identifier)?.as_str();
-        let ty = get!(f, Rule::Type)?;
+        let gty = get!(f, Rule::GenericType)?;
         let value = get!(f, Rule::Value).ok().map(|p| p.as_str());
 
         fields.push(json!({
             "comment": comment,
             "name": ident,
-            "type": types.resolve(&ty)?,
+            "type": resolve_generic_type(gty, types)?,
             "value": value,
         }));
     }

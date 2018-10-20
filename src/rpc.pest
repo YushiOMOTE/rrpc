@@ -3,7 +3,11 @@ Name = _{ (ASCII_ALPHA ~ Char* | "_" ~ Char+) }
 
 Identifier = @{ Name }
 
+Template = { Identifier ~ "<" ~ (GenericType ~ ",")* ~ GenericType? ~ ">"  }
+
 Type = @{ ((Name | "..") ~ "::")* ~ Name }
+
+GenericType = { (Template | Type) }
 
 Pattern = @{ Name }
 
@@ -16,7 +20,7 @@ Attribute = _{ "{" ~ Value ~ "}" }
 
 Field = {
    CommentLine? ~
-   Identifier ~ ":" ~ Type ~ Attribute? ~ ","
+   Identifier ~ ":" ~ GenericType ~ Attribute? ~ ","
 }
 
 Variant = {
