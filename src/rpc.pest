@@ -3,13 +3,13 @@ Name = _{ (ASCII_ALPHA ~ Char* | "_" ~ Char+) }
 
 Identifier = @{ Name }
 
-Type = @{ Name }
+Type = @{ ((Name | "..") ~ "::")* ~ Name }
 
 Pattern = @{ Name }
 
-Path = @{ ((Name | "..") ~ "::")* ~ Name }
+Use = @{ ((Name | "..") ~ "::")* ~ Name }
 
-Use = { "use " ~ Path ~ ";" }
+UseLine = _{ "use " ~ Use ~ ";" }
 
 Value = @{ ("{" ~ Value ~ "}") | (!"}" ~ ANY)* }
 Attribute = _{ "{" ~ Value ~ "}" }
@@ -35,7 +35,7 @@ ReturnType = {
 
 Function = {
    CommentLine? ~
-   "fn " ~ Identifier ~ "(" ~ (Argument ~ ",")* ~ Argument? ~ ")" ~ "->" ~ ReturnType ~ ";"
+   "fn " ~ Identifier ~ "(" ~ (Argument ~ ",")* ~ Argument? ~ ")" ~ ("->" ~ ReturnType)? ~ ";"
 }
 
 Struct = {
@@ -65,11 +65,11 @@ Module = {
 }
 
 File = _{
-     SOI ~ Use* ~ Module ~ EOI
+     SOI ~ UseLine* ~ Module ~ EOI
 }
 
 Comment = { (!NEWLINE ~ ANY)* }
-CommentLine = ${ "///" ~ Comment ~ NEWLINE }
+CommentLine = ${ "///" ~ Comment }
 
 WHITESPACE = _{ " " | "\r" | "\n" | "\t" }
 COMMENT = _{ "//" ~ !("/") ~ (!NEWLINE ~ ANY)* }

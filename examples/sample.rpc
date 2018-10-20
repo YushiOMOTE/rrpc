@@ -1,0 +1,21 @@
+use sample;
+
+mod name {
+    /// comment
+    struct name {
+        name: u8 {default}, /// comment
+        name: u32 {default}, /// comment
+    }
+
+    /// comment
+    enum name(u32) {
+        member{value}, /// comment
+        member{value}, /// comment
+    }
+
+    /// comment
+    interface name(pattern) {
+        /// comment
+        fn name(name: u32, name: bool) -> (bool, string);
+    }
+}
