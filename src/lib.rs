@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::value::Value;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 fn get<'a>(p: &Pair<'a, Rule>, rule: Rule) -> Result<Pair<'a, Rule>> {
     let mut opt = None;
@@ -57,6 +58,7 @@ pub enum InternalError {
     TypeNotFound(String, PestError<Rule>),
     LoadError(String, PestError<Rule>),
     ParseError(String, PestError<Rule>),
+    DupItem(String, PestError<Rule>),
     Bug(PestError<Rule>),
 }
 
@@ -95,6 +97,18 @@ impl InternalError {
         ).into()
     }
 
+    fn dup_item(name: &str, path: &str, p: &Pair<Rule>) -> Error {
+        InternalError::DupItem(
+            path.into(),
+            PestError::new_from_span(
+                ErrorVariant::CustomError {
+                    message: format!("duplicated {}: {}", name, p.as_str()),
+                },
+                p.as_span(),
+            ),
+        ).into()
+    }
+
     fn parse_error(path: &str, e: PestError<Rule>) -> Error {
         InternalError::ParseError(path.into(), e).into()
     }
@@ -116,6 +130,7 @@ impl fmt::Display for InternalError {
             InternalError::TypeNotFound(path, e) => write!(f, "{}:\n {}", path, e),
             InternalError::LoadError(path, e) => write!(f, "{}:\n {}", path, e),
             InternalError::ParseError(path, e) => write!(f, "{}:\n {}", path, e),
+            InternalError::DupItem(path, e) => write!(f, "{}:\n {}", path, e),
             InternalError::Bug(e) => write!(f, "{}", e),
         }
     }
@@ -128,6 +143,30 @@ impl std::error::Error for InternalError {
 
     fn cause(&self) -> Option<&std::error::Error> {
         None
+    }
+}
+
+struct DupChecker<'a> {
+    name: &'a str,
+    path: &'a str,
+    set: HashSet<String>,
+}
+
+impl<'a> DupChecker<'a> {
+    fn new(name: &'a str, path: &'a str) -> DupChecker<'a> {
+        DupChecker {
+            name,
+            path: path.into(),
+            set: HashSet::new(),
+        }
+    }
+
+    fn check(&mut self, p: &Pair<Rule>) -> Result<()> {
+        if self.set.insert(p.as_str().into()) {
+            Ok(())
+        } else {
+            Err(InternalError::dup_item(self.name, self.path, p))
+        }
     }
 }
 
@@ -285,6 +324,11 @@ fn generate_defs(pairs: Pairs<Rule>, resolver: &mut Resolver) -> Result<Value> {
     let mut uses = Vec::new();
     let mut nodes = Vec::new();
 
+    let current = resolver.current_file().to_string();
+
+    let mut ty_checker = DupChecker::new("type name", &current);
+    let mut if_checker = DupChecker::new("interface name", &current);
+
     for p in pairs {
         match p.as_rule() {
             Rule::Use => {
@@ -293,18 +337,28 @@ fn generate_defs(pairs: Pairs<Rule>, resolver: &mut Resolver) -> Result<Value> {
             Rule::Struct => {
                 let (ident, value) = generate_struct(p, resolver)?;
 
-                resolver.add_type(&ident, value.clone());
+                ty_checker.check(&ident)?;
+
+                resolver.add_type(ident.as_str(), value.clone());
 
                 nodes.push(value);
             }
             Rule::Enum => {
                 let (ident, value) = generate_enum(p, resolver)?;
 
-                resolver.add_type(&ident, value.clone());
+                ty_checker.check(&ident)?;
+
+                resolver.add_type(ident.as_str(), value.clone());
 
                 nodes.push(value);
             }
-            Rule::Interface => nodes.push(generate_interface(p, resolver)?),
+            Rule::Interface => {
+                let (ident, value) = generate_interface(p, resolver)?;
+
+                if_checker.check(&ident)?;
+
+                nodes.push(value);
+            }
             Rule::EOI => {}
             _ => unreachable!(),
         }
@@ -365,41 +419,53 @@ fn generate_use(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
     }))
 }
 
-fn generate_struct(p: Pair<Rule>, resolver: &mut Resolver) -> Result<(String, Value)> {
+fn generate_struct<'a>(
+    p: Pair<'a, Rule>,
+    resolver: &mut Resolver,
+) -> Result<(Pair<'a, Rule>, Value)> {
     trace!("Generating struct:\n {}", p.as_str());
+
+    let mut checker = DupChecker::new("struct member name", &resolver.current_file());
 
     let mut fields = Vec::new();
 
     for f in get_all(&p, Rule::Field) {
         let comment = get_comment(&f).ok();
-        let ident = get(&f, Rule::Identifier)?.as_str();
+        let ident = get(&f, Rule::Identifier)?;
         let gty = get(&f, Rule::GenericType)?;
         let value = get(&f, Rule::Value).ok().map(|p| p.as_str());
 
+        checker.check(&ident)?;
+
         fields.push(json!({
             "comment": comment,
-            "name": ident,
+            "name": ident.as_str(),
             "type": resolver.resolve_generic_type(gty)?,
             "value": value,
         }));
     }
 
     let comment = get_comment(&p).ok();
-    let ident = get(&p, Rule::Identifier)?.as_str();
+    let ident = get(&p, Rule::Identifier)?;
 
     Ok((
-        ident.into(),
+        ident.clone(),
         json!({
             "comment" : comment,
-            "name": ident,
+            "name": ident.as_str(),
             "type": "struct",
             "fields": fields,
         }),
     ))
 }
 
-fn generate_enum(p: Pair<Rule>, resolver: &mut Resolver) -> Result<(String, Value)> {
+fn generate_enum<'a>(
+    p: Pair<'a, Rule>,
+    resolver: &mut Resolver,
+) -> Result<(Pair<'a, Rule>, Value)> {
     trace!("Generating enum:\n {}", p.as_str());
+
+    let mut checker = DupChecker::new("enum variant name", &resolver.current_file());
 
     let mut fields = Vec::new();
 
@@ -407,47 +473,60 @@ fn generate_enum(p: Pair<Rule>, resolver: &mut Resolver) -> Result<(String, Valu
 
     for f in get_all(&p, Rule::Variant) {
         let comment = get_comment(&f).ok();
-        let ident = get(&f, Rule::Identifier)?.as_str();
+        let ident = get(&f, Rule::Identifier)?;
         let value = get(&f, Rule::Value).ok().map(|p| p.as_str());
+
+        checker.check(&ident)?;
 
         fields.push(json!({
             "comment": comment,
-            "name": ident,
+            "name": ident.as_str(),
             "type": resolver.resolve_type(&uty)?,
             "value": value,
         }));
     }
 
     let comment = get_comment(&p).ok();
-    let ident = get(&p, Rule::Identifier)?.as_str();
+    let ident = get(&p, Rule::Identifier)?;
 
     Ok((
-        ident.into(),
+        ident.clone(),
         json!({
             "comment" : comment,
-            "name": ident,
+            "name": ident.as_str(),
             "type": resolver.resolve_type(&uty)?,
             "fields": fields,
         }),
     ))
 }
 
-fn generate_interface(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
+fn generate_interface<'a>(
+    p: Pair<'a, Rule>,
+    resolver: &mut Resolver,
+) -> Result<(Pair<'a, Rule>, Value)> {
     trace!("Generating interface:\n {}", p.as_str());
 
     let mut funcs = Vec::new();
 
+    let mut checker = DupChecker::new("function name", &resolver.current_file());
+
     for f in get_all(&p, Rule::Function) {
         let comment = get_comment(&p).ok();
-        let ident = get(&f, Rule::Identifier)?.as_str();
+        let ident = get(&f, Rule::Identifier)?;
         let mut args = Vec::new();
 
+        checker.check(&ident)?;
+
+        let mut arg_checker = DupChecker::new("argument name", &resolver.current_file());
+
         for a in get_all(&f, Rule::Argument) {
-            let ident = get(&a, Rule::Identifier)?.as_str();
+            let ident = get(&a, Rule::Identifier)?;
             let ty = get(&a, Rule::Type)?;
 
+            arg_checker.check(&ident)?;
+
             args.push(json!({
-                    "name": ident,
+                    "name": ident.as_str(),
                     "type": resolver.resolve_type(&ty)?,
                 }));
         }
@@ -467,23 +546,26 @@ fn generate_interface(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
 
         funcs.push(json!({
             "comment": comment,
-            "name": ident,
+            "name": ident.as_str(),
             "args": args,
             "return": r,
         }));
     }
 
     let comment = get_comment(&p).ok();
-    let ident = get(&p, Rule::Identifier)?.as_str();
+    let ident = get(&p, Rule::Identifier)?;
     let pattern = get(&p, Rule::Pattern)?.as_str();
 
-    Ok(json!({
+    Ok((
+        ident.clone(),
+        json!({
         "comment" : comment,
-        "name": ident,
+        "name": ident.as_str(),
         "pattern": pattern,
         "type": "interface",
         "funcs": funcs,
-    }))
+    }),
+    ))
 }
 
 use error_chain::ChainedError;
