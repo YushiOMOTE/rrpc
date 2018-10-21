@@ -1,21 +1,8 @@
-use sample;
-
-mod name {
+mod sample {
     /// comment
-    struct name {
-        name: u8 {default}, /// comment
-        name: u32 {default}, /// comment
-    }
-
-    /// comment
-    enum name(u32) {
-        member{value}, /// comment
-        member{value}, /// comment
-    }
-
-    /// comment
-    interface name(pattern) {
+    struct XXX {
         /// comment
-        fn name(name: u32, name: bool) -> (bool, string);
+        name: u8 {default},
+        name: u32 {default},
     }
 }

@@ -54,18 +54,38 @@ fn get_comment<'a>(p: &'a Pair<Rule>) -> Result<&'a str> {
 
 #[derive(Debug)]
 pub enum Error {
+    FileError(String),
     TypeNotFound(PestError<Rule>),
+    LoadError(PestError<Rule>),
+    ParseError(PestError<Rule>),
     Bug(PestError<Rule>),
 }
 
 impl Error {
-    fn not_found(p: &Pair<Rule>) -> Error {
+    fn file_error<T: ToString>(msg: T) -> Error {
+        Error::FileError(msg.to_string())
+    }
+
+    fn type_not_found(p: &Pair<Rule>) -> Error {
         Error::TypeNotFound(PestError::new_from_span(
             ErrorVariant::CustomError {
                 message: format!("Type not found: {}", p.as_str()),
             },
             p.as_span(),
         ))
+    }
+
+    fn load_error(p: &Pair<Rule>, path: &str, msg: &str) -> Error {
+        Error::LoadError(PestError::new_from_span(
+            ErrorVariant::CustomError {
+                message: format!("Couldn't load module: {}: {}", path, msg),
+            },
+            p.as_span(),
+        ))
+    }
+
+    fn parse_error(e: PestError<Rule>) -> Error {
+        Error::ParseError(e)
     }
 
     fn bug(p: &Pair<Rule>, rule: Rule) -> Error {
@@ -81,7 +101,10 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            Error::FileError(e) => write!(f, "{}", e),
             Error::TypeNotFound(e) => write!(f, "{}", e),
+            Error::LoadError(e) => write!(f, "{}", e),
+            Error::ParseError(e) => write!(f, "{}", e),
             Error::Bug(e) => write!(f, "{}", e),
         }
     }
@@ -125,13 +148,15 @@ impl TypeResolver {
     }
 
     fn resolve(&self, path: &Pair<Rule>) -> Result<Value> {
+        println!("Lookup type: {}", path.as_str());
         self.types
             .get(path.as_str())
             .map(|p| p.clone())
-            .ok_or(Error::not_found(path))
+            .ok_or(Error::type_not_found(path))
     }
 
     fn register(&mut self, path: &str, value: Value) {
+        println!("Add type: {}: {}", path, value);
         self.types.insert(path.into(), value);
     }
 }
@@ -142,7 +167,9 @@ fn parse(pairs: Pairs<Rule>, types: &mut TypeResolver) -> Result<Value> {
 
     for p in pairs {
         match p.as_rule() {
-            Rule::Use => uses.push(json!(p.as_str())),
+            Rule::Use => {
+                uses.push(parse_use(p, types)?);
+            }
             Rule::Module => {
                 module = Some(parse_module(p, types)?);
             }
@@ -159,6 +186,45 @@ fn parse(pairs: Pairs<Rule>, types: &mut TypeResolver) -> Result<Value> {
 
 fn path(module: &str, ident: &str) -> String {
     format!("{}::{}", module, ident)
+}
+
+fn parse_root(path: &str) -> Result<Value> {
+    let mut file = File::open(path).map_err(|e| Error::file_error(e))?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|e| Error::file_error(e))?;
+
+    let pairs = RpcParser::parse(Rule::File, &contents).map_err(|e| Error::parse_error(e))?;
+    let mut types = TypeResolver::new();
+    parse(pairs, &mut types)
+}
+
+fn parse_use(p: Pair<Rule>, types: &mut TypeResolver) -> Result<Value> {
+    let path = getm!(p, Rule::Path);
+    let raw_path = path.clone()
+        .into_iter()
+        .map(|p| p.as_str())
+        .collect::<Vec<_>>()
+        .join("::");
+    let path = path.into_iter()
+        .map(|p| p.as_str())
+        .collect::<Vec<_>>()
+        .join("/");
+    let path = format!("{}.rpc", path);
+
+    let mut file =
+        File::open(path.clone()).map_err(|e| Error::load_error(&p, &path, &e.to_string()))?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|e| Error::load_error(&p, &path, &e.to_string()))?;
+
+    let pairs = RpcParser::parse(Rule::File, &contents).map_err(|e| Error::parse_error(e))?;
+    let _ = parse(pairs, types)?;
+
+    Ok(json!({
+        "module": raw_path,
+        "path": path,
+    }))
 }
 
 fn parse_module(p: Pair<Rule>, types: &mut TypeResolver) -> Result<Value> {
@@ -281,7 +347,7 @@ fn parse_enum(p: Pair<Rule>, types: &mut TypeResolver) -> Result<(String, Value)
 }
 
 fn parse_interface(p: Pair<Rule>, types: &mut TypeResolver) -> Result<Value> {
-    let mut fields = Vec::new();
+    let mut funcs = Vec::new();
 
     for f in getm!(p, Rule::Function) {
         let comment = get_comment(&p).ok();
@@ -311,7 +377,7 @@ fn parse_interface(p: Pair<Rule>, types: &mut TypeResolver) -> Result<Value> {
             None
         };
 
-        fields.push(json!({
+        funcs.push(json!({
             "comment": comment,
             "name": ident,
             "args": args,
@@ -328,22 +394,14 @@ fn parse_interface(p: Pair<Rule>, types: &mut TypeResolver) -> Result<Value> {
         "name": ident,
         "pattern": pattern,
         "type": "interface",
-        "fields": fields,
+        "funcs": funcs,
     }))
 }
 
 pub fn run() {
-    let mut file = File::open("examples/init.rpc").expect("File not found");
-    let mut contents = String::new();
-    file.read_to_string(&mut contents).expect("Read failed");
-
-    let pairs = RpcParser::parse(Rule::File, &contents).unwrap_or_else(|e| panic!("{}", e));
-    let mut types = TypeResolver::new();
-    let j = match parse(pairs, &mut types) {
-        Ok(j) => j,
-        Err(e) => panic!("{}", e),
-    };
-
+    let j = parse_root("examples/init.rpc")
+        .map_err(|e| panic!("{}", e))
+        .unwrap();
     println!("{}", serde_json::to_string_pretty(&j).unwrap());
 
     // let mut ast = Ast::new();

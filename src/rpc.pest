@@ -11,7 +11,9 @@ GenericType = { (Template | Type) }
 
 Pattern = @{ Name }
 
-Use = @{ ((Name | "..") ~ "::")* ~ Name }
+Path = @{ Name | ".." }
+
+Use = ${ (Path ~ "::")* ~ Path }
 
 UseLine = _{ "use " ~ Use ~ ";" }
 
