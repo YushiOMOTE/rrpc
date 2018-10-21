@@ -22,19 +22,27 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::fmt;
 use std::path::{Path, PathBuf};
-
-use serde_json::value::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-fn get<'a>(p: &Pair<'a, Rule>, rule: Rule) -> Result<Pair<'a, Rule>> {
-    let mut opt = None;
+use serde_json::value::Value;
+
+use error_chain::ChainedError;
+
+fn get<'a>(p: &Pair<'a, Rule>, rule: Rule) -> Pair<'a, Rule> {
+    match get_opt(p, rule) {
+        Some(p) => p,
+        None => panic!("missing {:?} in {}", rule, p.as_str()),
+    }
+}
+
+fn get_opt<'a>(p: &Pair<'a, Rule>, rule: Rule) -> Option<Pair<'a, Rule>> {
     for pair in p.clone().into_inner() {
         if rule == pair.as_rule() {
-            opt = Some(pair)
+            return Some(pair);
         }
     }
-    opt.ok_or(InternalError::bug(&p, rule))
+    None
 }
 
 fn get_all<'a>(p: &Pair<'a, Rule>, rule: Rule) -> Vec<Pair<'a, Rule>> {
@@ -47,9 +55,9 @@ fn get_all<'a>(p: &Pair<'a, Rule>, rule: Rule) -> Vec<Pair<'a, Rule>> {
     array
 }
 
-fn get_comment<'a>(p: &'a Pair<Rule>) -> Result<&'a str> {
-    let p = get(p, Rule::CommentLine)?;
-    get(&p, Rule::Comment).map(|p| p.as_str())
+fn get_comment<'a>(p: &'a Pair<Rule>) -> Option<&'a str> {
+    let p = get_opt(p, Rule::CommentLine)?;
+    get_opt(&p, Rule::Comment).map(|p| p.as_str())
 }
 
 #[derive(Debug)]
@@ -58,8 +66,7 @@ pub enum InternalError {
     TypeNotFound(String, PestError<Rule>),
     LoadError(String, PestError<Rule>),
     ParseError(String, PestError<Rule>),
-    DupItem(String, PestError<Rule>),
-    Bug(PestError<Rule>),
+    Duplicated(String, PestError<Rule>),
 }
 
 error_chain! {
@@ -97,8 +104,8 @@ impl InternalError {
         ).into()
     }
 
-    fn dup_item(name: &str, path: &str, p: &Pair<Rule>) -> Error {
-        InternalError::DupItem(
+    fn duplicated(name: &str, path: &str, p: &Pair<Rule>) -> Error {
+        InternalError::Duplicated(
             path.into(),
             PestError::new_from_span(
                 ErrorVariant::CustomError {
@@ -112,15 +119,6 @@ impl InternalError {
     fn parse_error(path: &str, e: PestError<Rule>) -> Error {
         InternalError::ParseError(path.into(), e).into()
     }
-
-    fn bug(p: &Pair<Rule>, rule: Rule) -> Error {
-        InternalError::Bug(PestError::new_from_span(
-            ErrorVariant::CustomError {
-                message: format!("missing {:?} in {}", rule, p.as_str()),
-            },
-            p.as_span(),
-        )).into()
-    }
 }
 
 impl fmt::Display for InternalError {
@@ -130,8 +128,7 @@ impl fmt::Display for InternalError {
             InternalError::TypeNotFound(path, e) => write!(f, "{}:\n {}", path, e),
             InternalError::LoadError(path, e) => write!(f, "{}:\n {}", path, e),
             InternalError::ParseError(path, e) => write!(f, "{}:\n {}", path, e),
-            InternalError::DupItem(path, e) => write!(f, "{}:\n {}", path, e),
-            InternalError::Bug(e) => write!(f, "{}", e),
+            InternalError::Duplicated(path, e) => write!(f, "{}:\n {}", path, e),
         }
     }
 }
@@ -165,7 +162,7 @@ impl<'a> DupChecker<'a> {
         if self.set.insert(p.as_str().into()) {
             Ok(())
         } else {
-            Err(InternalError::dup_item(self.name, self.path, p))
+            Err(InternalError::duplicated(self.name, self.path, p))
         }
     }
 }
@@ -220,7 +217,7 @@ impl Resolver {
     }
 
     fn resolve_generic_type(&self, p: Pair<Rule>) -> Result<Value> {
-        match get(&p, Rule::Template).ok() {
+        match get_opt(&p, Rule::Template) {
             Some(template) => {
                 let mut tys = Vec::new();
 
@@ -228,7 +225,7 @@ impl Resolver {
                     tys.push(self.resolve_generic_type(gty)?);
                 }
 
-                let ident = get(&template, Rule::Identifier)?.as_str();
+                let ident = get(&template, Rule::Identifier).as_str();
 
                 Ok(json!({
                     "name": ident,
@@ -237,7 +234,7 @@ impl Resolver {
                 }))
             }
             None => {
-                let ty = get(&p, Rule::Type)?;
+                let ty = get(&p, Rule::Type);
                 self.resolve_type(&ty)
             }
         }
@@ -360,7 +357,7 @@ fn generate_defs(pairs: Pairs<Rule>, resolver: &mut Resolver) -> Result<Value> {
                 nodes.push(value);
             }
             Rule::EOI => {}
-            _ => unreachable!(),
+            _ => unreachable!("unexpected token {:?}", p),
         }
     }
 
@@ -430,10 +427,10 @@ fn generate_struct<'a>(
     let mut fields = Vec::new();
 
     for f in get_all(&p, Rule::Field) {
-        let comment = get_comment(&f).ok();
-        let ident = get(&f, Rule::Identifier)?;
-        let gty = get(&f, Rule::GenericType)?;
-        let value = get(&f, Rule::Value).ok().map(|p| p.as_str());
+        let comment = get_comment(&f);
+        let ident = get(&f, Rule::Identifier);
+        let gty = get(&f, Rule::GenericType);
+        let value = get_opt(&f, Rule::Value).map(|p| p.as_str());
 
         checker.check(&ident)?;
 
@@ -445,8 +442,8 @@ fn generate_struct<'a>(
         }));
     }
 
-    let comment = get_comment(&p).ok();
-    let ident = get(&p, Rule::Identifier)?;
+    let comment = get_comment(&p);
+    let ident = get(&p, Rule::Identifier);
 
     Ok((
         ident.clone(),
@@ -469,12 +466,12 @@ fn generate_enum<'a>(
 
     let mut fields = Vec::new();
 
-    let uty = get(&p, Rule::Type)?;
+    let uty = get(&p, Rule::Type);
 
     for f in get_all(&p, Rule::Variant) {
-        let comment = get_comment(&f).ok();
-        let ident = get(&f, Rule::Identifier)?;
-        let value = get(&f, Rule::Value).ok().map(|p| p.as_str());
+        let comment = get_comment(&f);
+        let ident = get(&f, Rule::Identifier);
+        let value = get_opt(&f, Rule::Value).map(|p| p.as_str());
 
         checker.check(&ident)?;
 
@@ -486,8 +483,8 @@ fn generate_enum<'a>(
         }));
     }
 
-    let comment = get_comment(&p).ok();
-    let ident = get(&p, Rule::Identifier)?;
+    let comment = get_comment(&p);
+    let ident = get(&p, Rule::Identifier);
 
     Ok((
         ident.clone(),
@@ -511,8 +508,8 @@ fn generate_interface<'a>(
     let mut checker = DupChecker::new("function name", &resolver.current_file());
 
     for f in get_all(&p, Rule::Function) {
-        let comment = get_comment(&p).ok();
-        let ident = get(&f, Rule::Identifier)?;
+        let comment = get_comment(&p);
+        let ident = get(&f, Rule::Identifier);
         let mut args = Vec::new();
 
         checker.check(&ident)?;
@@ -520,8 +517,8 @@ fn generate_interface<'a>(
         let mut arg_checker = DupChecker::new("argument name", &resolver.current_file());
 
         for a in get_all(&f, Rule::Argument) {
-            let ident = get(&a, Rule::Identifier)?;
-            let ty = get(&a, Rule::Type)?;
+            let ident = get(&a, Rule::Identifier);
+            let ty = get(&a, Rule::Type);
 
             arg_checker.check(&ident)?;
 
@@ -531,7 +528,7 @@ fn generate_interface<'a>(
                 }));
         }
 
-        let r = get(&f, Rule::ReturnType).ok();
+        let r = get_opt(&f, Rule::ReturnType);
         let r = if let Some(r) = r {
             let mut rs = Vec::new();
 
@@ -552,9 +549,9 @@ fn generate_interface<'a>(
         }));
     }
 
-    let comment = get_comment(&p).ok();
-    let ident = get(&p, Rule::Identifier)?;
-    let pattern = get(&p, Rule::Pattern)?.as_str();
+    let comment = get_comment(&p);
+    let ident = get(&p, Rule::Identifier);
+    let pattern = get(&p, Rule::Pattern).as_str();
 
     Ok((
         ident.clone(),
@@ -567,8 +564,6 @@ fn generate_interface<'a>(
     }),
     ))
 }
-
-use error_chain::ChainedError;
 
 pub fn run() {
     let j = match generate("examples/init.rpc") {
