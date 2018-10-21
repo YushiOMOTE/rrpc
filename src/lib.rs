@@ -7,6 +7,8 @@ extern crate serde_json;
 extern crate serde_derive;
 #[macro_use]
 extern crate error_chain;
+#[macro_use]
+extern crate log;
 
 use pest::Parser;
 use pest::error::{Error as PestError, ErrorVariant};
@@ -164,11 +166,36 @@ impl Resolver {
     }
 
     fn resolve_type(&self, path: &Pair<Rule>) -> Result<Value> {
-        println!("Lookup type: {}", path.as_str());
+        debug!("Lookup type: {}", path.as_str());
+
         self.types
             .get(path.as_str())
             .map(|p| p.clone())
             .ok_or(InternalError::type_not_found(path))
+    }
+
+    fn resolve_generic_type(&self, p: Pair<Rule>) -> Result<Value> {
+        match get(&p, Rule::Template).ok() {
+            Some(template) => {
+                let mut tys = Vec::new();
+
+                for gty in get_all(&template, Rule::GenericType) {
+                    tys.push(self.resolve_generic_type(gty)?);
+                }
+
+                let ident = get(&template, Rule::Identifier)?.as_str();
+
+                Ok(json!({
+                    "name": ident,
+                    "type": "template",
+                    "subtypes": tys,
+                }))
+            }
+            None => {
+                let ty = get(&p, Rule::Type)?;
+                self.resolve_type(&ty)
+            }
+        }
     }
 
     fn add_type(&mut self, ident: &str, value: Value) {
@@ -177,7 +204,7 @@ impl Resolver {
             None => ident.to_string(),
         };
 
-        println!("Add type: {}", path);
+        debug!("Add type: {}", path);
 
         self.types.insert(path, value);
     }
@@ -191,10 +218,6 @@ impl Resolver {
             .map_err(|e| InternalError::file_error(e))?;
 
         Ok(contents)
-    }
-
-    fn parse<'a>(&self, s: &'a str) -> Result<Pairs<'a, Rule>> {
-        RpcParser::parse(Rule::File, s).map_err(|e| InternalError::parse_error(e))
     }
 
     fn enter_dir(&mut self, dir: &str) -> Result<()> {
@@ -230,18 +253,34 @@ impl Resolver {
     }
 }
 
-fn parse(pairs: Pairs<Rule>, types: &mut Resolver) -> Result<Value> {
+fn parse<'a>(s: &'a str) -> Result<Pairs<'a, Rule>> {
+    RpcParser::parse(Rule::File, s).map_err(|e| InternalError::parse_error(e))
+}
+
+fn generate_defs(pairs: Pairs<Rule>, resolver: &mut Resolver) -> Result<Value> {
     let mut uses = Vec::new();
-    let mut module = None;
+    let mut nodes = Vec::new();
 
     for p in pairs {
         match p.as_rule() {
             Rule::Use => {
-                uses.push(parse_use(p, types)?);
+                uses.push(generate_use(p, resolver)?);
             }
-            Rule::Module => {
-                module = Some(parse_module(p, types)?);
+            Rule::Struct => {
+                let (ident, value) = generate_struct(p, resolver)?;
+
+                resolver.add_type(&ident, value.clone());
+
+                nodes.push(value);
             }
+            Rule::Enum => {
+                let (ident, value) = generate_enum(p, resolver)?;
+
+                resolver.add_type(&ident, value.clone());
+
+                nodes.push(value);
+            }
+            Rule::Interface => nodes.push(generate_interface(p, resolver)?),
             Rule::EOI => {}
             _ => unreachable!(),
         }
@@ -249,21 +288,21 @@ fn parse(pairs: Pairs<Rule>, types: &mut Resolver) -> Result<Value> {
 
     Ok(json!({
         "uses": uses,
-        "mod": module.expect("Module not found"),
+        "nodes": nodes,
     }))
 }
 
-fn parse_root(path: &str) -> Result<Value> {
-    let mut types = Resolver::new();
+fn generate(path: &str) -> Result<Value> {
+    let mut resolver = Resolver::new();
 
-    let contents = types.load(path)?;
-    let pairs = types.parse(&contents)?;
+    let contents = resolver.load(path)?;
+    let pairs = parse(&contents)?;
 
-    types.enter_dir(path)?;
-    parse(pairs, &mut types)
+    resolver.enter_dir(path)?;
+    generate_defs(pairs, &mut resolver)
 }
 
-fn parse_use(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
+fn generate_use(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
     let path = get_all(&p, Rule::Path);
     let raw_path = path.clone()
         .into_iter()
@@ -276,18 +315,16 @@ fn parse_use(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
         .join("/");
     let path = format!("{}.rpc", path);
 
-    let contents = types
+    let contents = resolver
         .load(&path)
         .chain_err(|| InternalError::load_error(&p, &path))?;
-    let pairs = types
-        .parse(&contents)
-        .chain_err(|| InternalError::load_error(&p, &path))?;
+    let pairs = parse(&contents).chain_err(|| InternalError::load_error(&p, &path))?;
 
-    types.enter_dir(&path)?;
-    types.enter_ns(&raw_path);
-    let _ = parse(pairs, types).chain_err(|| InternalError::load_error(&p, &path))?;
-    types.exit_ns();
-    types.exit_dir();
+    resolver.enter_dir(&path)?;
+    resolver.enter_ns(&raw_path);
+    let _ = generate_defs(pairs, resolver).chain_err(|| InternalError::load_error(&p, &path))?;
+    resolver.exit_ns();
+    resolver.exit_dir();
 
     Ok(json!({
         "module": raw_path,
@@ -295,63 +332,7 @@ fn parse_use(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
     }))
 }
 
-fn parse_module(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
-    let module = get(&p.clone(), Rule::Identifier)?.as_str();
-    let mut nodes = Vec::new();
-
-    for p in p.into_inner() {
-        match p.as_rule() {
-            Rule::Struct => {
-                let (ident, value) = parse_struct(p, types)?;
-
-                types.add_type(&ident, value.clone());
-
-                nodes.push(value);
-            }
-            Rule::Enum => {
-                let (ident, value) = parse_enum(p, types)?;
-
-                types.add_type(&ident, value.clone());
-
-                nodes.push(value);
-            }
-            Rule::Interface => nodes.push(parse_interface(p, types)?),
-            Rule::Identifier => {}
-            _ => unreachable!(),
-        }
-    }
-
-    Ok(json!({
-        "name": module,
-        "nodes": nodes,
-    }))
-}
-
-fn resolve_generic_type(p: Pair<Rule>, types: &Resolver) -> Result<Value> {
-    match get(&p, Rule::Template).ok() {
-        Some(template) => {
-            let mut tys = Vec::new();
-
-            for gty in get_all(&template, Rule::GenericType) {
-                tys.push(resolve_generic_type(gty, types)?);
-            }
-
-            let ident = get(&template, Rule::Identifier)?.as_str();
-
-            Ok(json!({
-                "name": ident,
-                "type": "template",
-                "subtypes": tys,
-            }))
-        }
-        None => {
-            let ty = get(&p, Rule::Type)?;
-            types.resolve_type(&ty)
-        }
-    }
-}
-
-fn parse_struct(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> {
+fn generate_struct(p: Pair<Rule>, resolver: &mut Resolver) -> Result<(String, Value)> {
     let mut fields = Vec::new();
 
     for f in get_all(&p, Rule::Field) {
@@ -363,7 +344,7 @@ fn parse_struct(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> 
         fields.push(json!({
             "comment": comment,
             "name": ident,
-            "type": resolve_generic_type(gty, types)?,
+            "type": resolver.resolve_generic_type(gty)?,
             "value": value,
         }));
     }
@@ -382,7 +363,7 @@ fn parse_struct(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> 
     ))
 }
 
-fn parse_enum(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> {
+fn generate_enum(p: Pair<Rule>, resolver: &mut Resolver) -> Result<(String, Value)> {
     let mut fields = Vec::new();
 
     let uty = get(&p, Rule::Type)?;
@@ -395,7 +376,7 @@ fn parse_enum(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> {
         fields.push(json!({
             "comment": comment,
             "name": ident,
-            "type": types.resolve_type(&uty)?,
+            "type": resolver.resolve_type(&uty)?,
             "value": value,
         }));
     }
@@ -408,13 +389,13 @@ fn parse_enum(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> {
         json!({
             "comment" : comment,
             "name": ident,
-            "type": types.resolve_type(&uty)?,
+            "type": resolver.resolve_type(&uty)?,
             "fields": fields,
         }),
     ))
 }
 
-fn parse_interface(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
+fn generate_interface(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
     let mut funcs = Vec::new();
 
     for f in get_all(&p, Rule::Function) {
@@ -428,7 +409,7 @@ fn parse_interface(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
 
             args.push(json!({
                     "name": ident,
-                    "type": types.resolve_type(&ty)?,
+                    "type": resolver.resolve_type(&ty)?,
                 }));
         }
 
@@ -469,7 +450,7 @@ fn parse_interface(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
 use error_chain::ChainedError;
 
 pub fn run() {
-    let j = parse_root("examples/init.rpc")
+    let j = generate("examples/init.rpc")
         .map_err(|e| panic!("{}", e.display_chain().to_string()))
         .unwrap();
     println!("{}", serde_json::to_string_pretty(&j).unwrap());

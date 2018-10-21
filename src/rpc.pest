@@ -15,7 +15,7 @@ Path = @{ Name | ".." }
 
 Use = ${ (Path ~ "::")* ~ Path }
 
-UseLine = _{ "use " ~ Use ~ ";" }
+Import = _{ "use " ~ Use ~ ";" }
 
 Value = @{ ("{" ~ Value ~ "}") | (!"}" ~ ANY)* }
 Attribute = _{ "{" ~ Value ~ "}" }
@@ -60,6 +60,7 @@ Interface = {
 }
 
 Definitions = _{
+   Import |
    Struct |
    Enum |
    Interface
@@ -71,7 +72,7 @@ Module = {
 }
 
 File = _{
-     SOI ~ UseLine* ~ Module ~ EOI
+     SOI ~ Definitions* ~ EOI
 }
 
 Comment = { (!NEWLINE ~ ANY)* }

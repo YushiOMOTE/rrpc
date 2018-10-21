@@ -1,8 +1,6 @@
-mod sample {
+/// comment
+struct XXX {
     /// comment
-    struct XXX {
-        /// comment
-        name: u8 {default},
-        name: u32 {default},
-    }
+    name: u8 {default},
+    name: u32 {default},
 }

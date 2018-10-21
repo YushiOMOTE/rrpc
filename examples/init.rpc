@@ -1,25 +1,24 @@
 use sample;
 
-mod name {
+/// comment
+struct name {
     /// comment
-    struct name {
-        /// comment
-        member: sample::XXX {value},
-        /// comment
-        member: vector<u32> {value},
-    }
-
+    member: sample::XXX {value},
     /// comment
-    enum name(u32) {
-        /// comment
-        member{value},
-        /// comment
-        member{value},
-    }
-
-    /// comment
-    interface name(pattern) {
-        /// comment
-        fn name(name: string, name: u32) -> (string, bool);
-    }
+    member: vector<u32> {value},
 }
+
+/// comment
+enum name(u32) {
+    /// comment
+    member{value},
+    /// comment
+    member{value},
+}
+
+/// comment
+interface name(pattern) {
+    /// comment
+    fn name(name: string, name: u32) -> (string, bool);
+}
+
