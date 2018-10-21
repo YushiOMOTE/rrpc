@@ -3,22 +3,21 @@ use sample;
 /// comment
 struct name {
     /// comment
-    member: sample::XXX {value},
+    x: sample::Coordinate {{0, 0}},
     /// comment
-    member: vector<u32> {value},
+    y: vector<u32> {value},
 }
 
 /// comment
-enum name(u32) {
+enum Mode(u32) {
     /// comment
-    member{value},
+    Flat{0},
     /// comment
-    member{value},
+    Multi,
 }
 
 /// comment
 interface name(pattern) {
     /// comment
-    fn name(name: string, name: u32) -> (string, bool);
+    fn create(x: string, y: u32) -> (string, bool);
 }
-

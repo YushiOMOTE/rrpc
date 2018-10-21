@@ -1,0 +1,4 @@
+struct Child {
+   name: string,
+   age: u32,
+}

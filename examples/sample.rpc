@@ -1,6 +1,8 @@
+use child;
+
 /// comment
-struct XXX {
+struct Coordinate {
     /// comment
-    name: u8 {default},
-    name: u32 {default},
+    x: u32 {0},
+    y: u32 {0},
 }
