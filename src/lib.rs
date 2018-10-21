@@ -24,33 +24,29 @@ use std::path::{Path, PathBuf};
 use serde_json::value::Value;
 use std::collections::HashMap;
 
-macro_rules! get {
-    ($pair: ident, $variant: path) => {{
-        let mut opt = None;
-        for pair in $pair.clone().into_inner() {
-            if let $variant = pair.as_rule() {
-                opt = Some(pair)
-            }
+fn get<'a>(p: &Pair<'a, Rule>, rule: Rule) -> Result<Pair<'a, Rule>> {
+    let mut opt = None;
+    for pair in p.clone().into_inner() {
+        if rule == pair.as_rule() {
+            opt = Some(pair)
         }
-        opt.ok_or(InternalError::bug(&$pair, $variant))
-    }};
+    }
+    opt.ok_or(InternalError::bug(&p, rule))
 }
 
-macro_rules! getm {
-    ($pair: ident, $variant: path) => {{
-        let mut array = Vec::new();
-        for pair in $pair.clone().into_inner() {
-            if let $variant = pair.as_rule() {
-                array.push(pair);
-            }
+fn get_all<'a>(p: &Pair<'a, Rule>, rule: Rule) -> Vec<Pair<'a, Rule>> {
+    let mut array = Vec::new();
+    for pair in p.clone().into_inner() {
+        if rule == pair.as_rule() {
+            array.push(pair);
         }
-        array
-    }};
+    }
+    array
 }
 
 fn get_comment<'a>(p: &'a Pair<Rule>) -> Result<&'a str> {
-    let p = get!(p, Rule::CommentLine)?;
-    get!(p, Rule::Comment).map(|p| p.as_str())
+    let p = get(p, Rule::CommentLine)?;
+    get(&p, Rule::Comment).map(|p| p.as_str())
 }
 
 #[derive(Debug)]
@@ -268,7 +264,7 @@ fn parse_root(path: &str) -> Result<Value> {
 }
 
 fn parse_use(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
-    let path = getm!(p, Rule::Path);
+    let path = get_all(&p, Rule::Path);
     let raw_path = path.clone()
         .into_iter()
         .map(|p| p.as_str())
@@ -300,7 +296,7 @@ fn parse_use(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
 }
 
 fn parse_module(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
-    let module = get!(p, Rule::Identifier)?.as_str();
+    let module = get(&p.clone(), Rule::Identifier)?.as_str();
     let mut nodes = Vec::new();
 
     for p in p.into_inner() {
@@ -332,15 +328,15 @@ fn parse_module(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
 }
 
 fn resolve_generic_type(p: Pair<Rule>, types: &Resolver) -> Result<Value> {
-    match get!(p, Rule::Template).ok() {
+    match get(&p, Rule::Template).ok() {
         Some(template) => {
             let mut tys = Vec::new();
 
-            for gty in getm!(template, Rule::GenericType) {
+            for gty in get_all(&template, Rule::GenericType) {
                 tys.push(resolve_generic_type(gty, types)?);
             }
 
-            let ident = get!(template, Rule::Identifier)?.as_str();
+            let ident = get(&template, Rule::Identifier)?.as_str();
 
             Ok(json!({
                 "name": ident,
@@ -349,7 +345,7 @@ fn resolve_generic_type(p: Pair<Rule>, types: &Resolver) -> Result<Value> {
             }))
         }
         None => {
-            let ty = get!(p, Rule::Type)?;
+            let ty = get(&p, Rule::Type)?;
             types.resolve_type(&ty)
         }
     }
@@ -358,11 +354,11 @@ fn resolve_generic_type(p: Pair<Rule>, types: &Resolver) -> Result<Value> {
 fn parse_struct(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> {
     let mut fields = Vec::new();
 
-    for f in getm!(p, Rule::Field) {
+    for f in get_all(&p, Rule::Field) {
         let comment = get_comment(&f).ok();
-        let ident = get!(f, Rule::Identifier)?.as_str();
-        let gty = get!(f, Rule::GenericType)?;
-        let value = get!(f, Rule::Value).ok().map(|p| p.as_str());
+        let ident = get(&f, Rule::Identifier)?.as_str();
+        let gty = get(&f, Rule::GenericType)?;
+        let value = get(&f, Rule::Value).ok().map(|p| p.as_str());
 
         fields.push(json!({
             "comment": comment,
@@ -373,7 +369,7 @@ fn parse_struct(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> 
     }
 
     let comment = get_comment(&p).ok();
-    let ident = get!(p, Rule::Identifier)?.as_str();
+    let ident = get(&p, Rule::Identifier)?.as_str();
 
     Ok((
         ident.into(),
@@ -389,12 +385,12 @@ fn parse_struct(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> 
 fn parse_enum(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> {
     let mut fields = Vec::new();
 
-    let uty = get!(p, Rule::Type)?;
+    let uty = get(&p, Rule::Type)?;
 
-    for f in getm!(p, Rule::Variant) {
+    for f in get_all(&p, Rule::Variant) {
         let comment = get_comment(&f).ok();
-        let ident = get!(f, Rule::Identifier)?.as_str();
-        let value = get!(f, Rule::Value).ok().map(|p| p.as_str());
+        let ident = get(&f, Rule::Identifier)?.as_str();
+        let value = get(&f, Rule::Value).ok().map(|p| p.as_str());
 
         fields.push(json!({
             "comment": comment,
@@ -405,7 +401,7 @@ fn parse_enum(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> {
     }
 
     let comment = get_comment(&p).ok();
-    let ident = get!(p, Rule::Identifier)?.as_str();
+    let ident = get(&p, Rule::Identifier)?.as_str();
 
     Ok((
         ident.into(),
@@ -421,14 +417,14 @@ fn parse_enum(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> {
 fn parse_interface(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
     let mut funcs = Vec::new();
 
-    for f in getm!(p, Rule::Function) {
+    for f in get_all(&p, Rule::Function) {
         let comment = get_comment(&p).ok();
-        let ident = get!(f, Rule::Identifier)?.as_str();
+        let ident = get(&f, Rule::Identifier)?.as_str();
         let mut args = Vec::new();
 
-        for a in getm!(f, Rule::Argument) {
-            let ident = get!(a, Rule::Identifier)?.as_str();
-            let ty = get!(a, Rule::Type)?;
+        for a in get_all(&f, Rule::Argument) {
+            let ident = get(&a, Rule::Identifier)?.as_str();
+            let ty = get(&a, Rule::Type)?;
 
             args.push(json!({
                     "name": ident,
@@ -436,11 +432,11 @@ fn parse_interface(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
                 }));
         }
 
-        let r = get!(f, Rule::ReturnType).ok();
+        let r = get(&f, Rule::ReturnType).ok();
         let r = if let Some(r) = r {
             let mut rs = Vec::new();
 
-            for ty in getm!(r, Rule::Type) {
+            for ty in get_all(&r, Rule::Type) {
                 rs.push(json!(ty.as_str()));
             }
 
@@ -458,8 +454,8 @@ fn parse_interface(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
     }
 
     let comment = get_comment(&p).ok();
-    let ident = get!(p, Rule::Identifier)?.as_str();
-    let pattern = get!(p, Rule::Pattern)?.as_str();
+    let ident = get(&p, Rule::Identifier)?.as_str();
+    let pattern = get(&p, Rule::Pattern)?.as_str();
 
     Ok(json!({
         "comment" : comment,
