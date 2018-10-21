@@ -54,9 +54,9 @@ fn get_comment<'a>(p: &'a Pair<Rule>) -> Result<&'a str> {
 #[derive(Debug)]
 pub enum InternalError {
     FileError(String),
-    TypeNotFound(PestError<Rule>),
-    LoadError(PestError<Rule>),
-    ParseError(PestError<Rule>),
+    TypeNotFound(String, PestError<Rule>),
+    LoadError(String, PestError<Rule>),
+    ParseError(String, PestError<Rule>),
     Bug(PestError<Rule>),
 }
 
@@ -67,36 +67,42 @@ error_chain! {
 }
 
 impl InternalError {
-    fn file_error<T: ToString>(msg: T) -> Error {
-        InternalError::FileError(msg.to_string()).into()
+    fn file_error<T: ToString>(e: T) -> Error {
+        InternalError::FileError(e.to_string()).into()
     }
 
-    fn type_not_found(p: &Pair<Rule>) -> Error {
-        InternalError::TypeNotFound(PestError::new_from_span(
-            ErrorVariant::CustomError {
-                message: format!("Type not found: {}", p.as_str()),
-            },
-            p.as_span(),
-        )).into()
+    fn type_not_found(path: &str, p: &Pair<Rule>) -> Error {
+        InternalError::TypeNotFound(
+            path.into(),
+            PestError::new_from_span(
+                ErrorVariant::CustomError {
+                    message: format!("type not found: {}", p.as_str()),
+                },
+                p.as_span(),
+            ),
+        ).into()
     }
 
-    fn load_error(p: &Pair<Rule>, path: &str) -> Error {
-        InternalError::LoadError(PestError::new_from_span(
-            ErrorVariant::CustomError {
-                message: format!("Couldn't load module: {}", path),
-            },
-            p.as_span(),
-        )).into()
+    fn load_error(path: &str, p: &Pair<Rule>, module: &str) -> Error {
+        InternalError::LoadError(
+            path.into(),
+            PestError::new_from_span(
+                ErrorVariant::CustomError {
+                    message: format!("couldn't load module: {}", module),
+                },
+                p.as_span(),
+            ),
+        ).into()
     }
 
-    fn parse_error(e: PestError<Rule>) -> Error {
-        InternalError::ParseError(e).into()
+    fn parse_error(path: &str, e: PestError<Rule>) -> Error {
+        InternalError::ParseError(path.into(), e).into()
     }
 
     fn bug(p: &Pair<Rule>, rule: Rule) -> Error {
         InternalError::Bug(PestError::new_from_span(
             ErrorVariant::CustomError {
-                message: format!("Bug: missing {:?} in {}", rule, p.as_str()),
+                message: format!("missing {:?} in {}", rule, p.as_str()),
             },
             p.as_span(),
         )).into()
@@ -107,9 +113,9 @@ impl fmt::Display for InternalError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             InternalError::FileError(e) => write!(f, "{}", e),
-            InternalError::TypeNotFound(e) => write!(f, "{}", e),
-            InternalError::LoadError(e) => write!(f, "{}", e),
-            InternalError::ParseError(e) => write!(f, "{}", e),
+            InternalError::TypeNotFound(path, e) => write!(f, "{}:\n {}", path, e),
+            InternalError::LoadError(path, e) => write!(f, "{}:\n {}", path, e),
+            InternalError::ParseError(path, e) => write!(f, "{}:\n {}", path, e),
             InternalError::Bug(e) => write!(f, "{}", e),
         }
     }
@@ -171,7 +177,7 @@ impl Resolver {
         self.types
             .get(path.as_str())
             .map(|p| p.clone())
-            .ok_or(InternalError::type_not_found(path))
+            .ok_or(InternalError::type_not_found(self.current_file(), path))
     }
 
     fn resolve_generic_type(&self, p: Pair<Rule>) -> Result<Value> {
@@ -210,7 +216,11 @@ impl Resolver {
     }
 
     fn load(&self, path: &str) -> Result<String> {
-        let path = Path::new(self.current_dir()).join(path);
+        debug!("Loading file: {}", path);
+
+        let path = Path::new(&self.current_dir()).join(path);
+
+        debug!("Loading path: {}", path.to_string_lossy());
 
         let mut file = File::open(path).map_err(|e| InternalError::file_error(e))?;
         let mut contents = String::new();
@@ -221,40 +231,54 @@ impl Resolver {
     }
 
     fn enter_dir(&mut self, dir: &str) -> Result<()> {
-        let path = if let Some(path) = self.directory.last() {
-            path.join(dir)
-        } else {
-            Path::new(dir).to_path_buf()
-        };
-        let mut path = path.canonicalize()
+        let path = Path::new(&self.current_dir()).join(dir);
+
+        let path = path.canonicalize()
             .map_err(|e| InternalError::file_error(e))?;
 
-        path.pop();
-
         self.directory.push(path);
+
+        debug!("Entered to directory: {}", self.current_dir());
 
         Ok(())
     }
 
     fn exit_dir(&mut self) {
         self.directory.pop();
+
+        debug!("Exited to directory: {}", self.current_dir());
     }
 
-    fn current_dir(&self) -> &str {
+    fn current_file(&self) -> &str {
         self.directory.last().and_then(|p| p.to_str()).unwrap_or("")
+    }
+
+    fn current_dir(&self) -> String {
+        self.directory
+            .last()
+            .map(|p| {
+                let mut p = p.clone();
+                p.pop();
+                p.to_string_lossy().to_string()
+            })
+            .unwrap_or("".into())
     }
 
     fn enter_ns(&mut self, module: &str) {
         self.namespace.push(module.into());
+
+        debug!("Entered to namespace: {}", module);
     }
 
     fn exit_ns(&mut self) {
-        self.namespace.pop();
+        let _ns = self.namespace.pop();
+
+        debug!("Exited to namespace: {}", _ns.unwrap_or("".into()));
     }
 }
 
-fn parse<'a>(s: &'a str) -> Result<Pairs<'a, Rule>> {
-    RpcParser::parse(Rule::File, s).map_err(|e| InternalError::parse_error(e))
+fn parse<'a>(path: &str, s: &'a str) -> Result<Pairs<'a, Rule>> {
+    RpcParser::parse(Rule::File, s).map_err(|e| InternalError::parse_error(path.into(), e))
 }
 
 fn generate_defs(pairs: Pairs<Rule>, resolver: &mut Resolver) -> Result<Value> {
@@ -293,16 +317,21 @@ fn generate_defs(pairs: Pairs<Rule>, resolver: &mut Resolver) -> Result<Value> {
 }
 
 fn generate(path: &str) -> Result<Value> {
+    debug!("Generating from {}", path);
+
     let mut resolver = Resolver::new();
 
     let contents = resolver.load(path)?;
-    let pairs = parse(&contents)?;
 
     resolver.enter_dir(path)?;
+
+    let pairs = parse(resolver.current_file(), &contents)?;
     generate_defs(pairs, &mut resolver)
 }
 
 fn generate_use(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
+    trace!("Generating use:\n {}", p.as_str());
+
     let path = get_all(&p, Rule::Path);
     let raw_path = path.clone()
         .into_iter()
@@ -317,12 +346,16 @@ fn generate_use(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
 
     let contents = resolver
         .load(&path)
-        .chain_err(|| InternalError::load_error(&p, &path))?;
-    let pairs = parse(&contents).chain_err(|| InternalError::load_error(&p, &path))?;
+        .chain_err(|| InternalError::load_error(resolver.current_file(), &p, &path))?;
+    let pairs = parse(resolver.current_file(), &contents)
+        .chain_err(|| InternalError::load_error(resolver.current_file(), &p, &path))?;
 
-    resolver.enter_dir(&path)?;
+    resolver
+        .enter_dir(&path)
+        .chain_err(|| InternalError::load_error(resolver.current_file(), &p, &path))?;
     resolver.enter_ns(&raw_path);
-    let _ = generate_defs(pairs, resolver).chain_err(|| InternalError::load_error(&p, &path))?;
+    let _ = generate_defs(pairs, resolver)
+        .chain_err(|| InternalError::load_error(resolver.current_file(), &p, &path))?;
     resolver.exit_ns();
     resolver.exit_dir();
 
@@ -333,6 +366,8 @@ fn generate_use(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
 }
 
 fn generate_struct(p: Pair<Rule>, resolver: &mut Resolver) -> Result<(String, Value)> {
+    trace!("Generating struct:\n {}", p.as_str());
+
     let mut fields = Vec::new();
 
     for f in get_all(&p, Rule::Field) {
@@ -364,6 +399,8 @@ fn generate_struct(p: Pair<Rule>, resolver: &mut Resolver) -> Result<(String, Va
 }
 
 fn generate_enum(p: Pair<Rule>, resolver: &mut Resolver) -> Result<(String, Value)> {
+    trace!("Generating enum:\n {}", p.as_str());
+
     let mut fields = Vec::new();
 
     let uty = get(&p, Rule::Type)?;
@@ -396,6 +433,8 @@ fn generate_enum(p: Pair<Rule>, resolver: &mut Resolver) -> Result<(String, Valu
 }
 
 fn generate_interface(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
+    trace!("Generating interface:\n {}", p.as_str());
+
     let mut funcs = Vec::new();
 
     for f in get_all(&p, Rule::Function) {
@@ -450,8 +489,9 @@ fn generate_interface(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
 use error_chain::ChainedError;
 
 pub fn run() {
-    let j = generate("examples/init.rpc")
-        .map_err(|e| panic!("{}", e.display_chain().to_string()))
-        .unwrap();
+    let j = match generate("examples/init.rpc") {
+        Ok(j) => j,
+        Err(e) => return error!("{}", e.display_chain().to_string()),
+    };
     println!("{}", serde_json::to_string_pretty(&j).unwrap());
 }
