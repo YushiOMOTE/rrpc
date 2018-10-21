@@ -4,12 +4,11 @@ extern crate pest_derive;
 extern crate serde;
 #[macro_use]
 extern crate serde_json;
-#[macro_use]
 extern crate serde_derive;
 #[macro_use]
 extern crate error_chain;
 
-use pest::{Parser, Span};
+use pest::Parser;
 use pest::error::{Error as PestError, ErrorVariant};
 use pest::iterators::{Pair, Pairs};
 
@@ -23,7 +22,6 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde_json::value::Value;
-use serde_json::map::Map;
 use std::collections::HashMap;
 
 macro_rules! get {
@@ -129,9 +127,7 @@ impl std::error::Error for InternalError {
     }
 }
 
-// type Result<T> = std::result::Result<T, Error>;
-
-struct TypeResolver {
+struct Resolver {
     types: HashMap<String, Value>,
     namespace: Vec<String>,
     directory: Vec<PathBuf>,
@@ -147,7 +143,7 @@ fn primitive(types: &mut HashMap<String, Value>, name: &str) {
     );
 }
 
-impl TypeResolver {
+impl Resolver {
     fn new() -> Self {
         let mut types = HashMap::new();
 
@@ -184,7 +180,9 @@ impl TypeResolver {
             Some(namespace) => format!("{}::{}", namespace, ident),
             None => ident.to_string(),
         };
-        println!("Add type: {}: {}", path, value);
+
+        println!("Add type: {}", path);
+
         self.types.insert(path, value);
     }
 
@@ -197,6 +195,10 @@ impl TypeResolver {
             .map_err(|e| InternalError::file_error(e))?;
 
         Ok(contents)
+    }
+
+    fn parse<'a>(&self, s: &'a str) -> Result<Pairs<'a, Rule>> {
+        RpcParser::parse(Rule::File, s).map_err(|e| InternalError::parse_error(e))
     }
 
     fn enter_dir(&mut self, dir: &str) -> Result<()> {
@@ -216,8 +218,6 @@ impl TypeResolver {
     }
 
     fn exit_dir(&mut self) {
-        println!("exiting");
-
         self.directory.pop();
     }
 
@@ -234,7 +234,7 @@ impl TypeResolver {
     }
 }
 
-fn parse(pairs: Pairs<Rule>, types: &mut TypeResolver) -> Result<Value> {
+fn parse(pairs: Pairs<Rule>, types: &mut Resolver) -> Result<Value> {
     let mut uses = Vec::new();
     let mut module = None;
 
@@ -257,26 +257,17 @@ fn parse(pairs: Pairs<Rule>, types: &mut TypeResolver) -> Result<Value> {
     }))
 }
 
-fn path(module: &str, ident: &str) -> String {
-    format!("{}::{}", module, ident)
-}
-
 fn parse_root(path: &str) -> Result<Value> {
-    // let mut file = File::open(path).map_err(|e| InternalError::file_error(e))?;
-    // let mut contents = String::new();
-    // file.read_to_string(&mut contents)
-    //     .map_err(|e| InternalError::file_error(e))?;
-
-    let mut types = TypeResolver::new();
+    let mut types = Resolver::new();
 
     let contents = types.load(path)?;
-    let pairs = RpcParser::parse(Rule::File, &contents).map_err(|e| InternalError::parse_error(e))?;
+    let pairs = types.parse(&contents)?;
 
-    types.enter_dir(path);
+    types.enter_dir(path)?;
     parse(pairs, &mut types)
 }
 
-fn parse_use(p: Pair<Rule>, types: &mut TypeResolver) -> Result<Value> {
+fn parse_use(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
     let path = getm!(p, Rule::Path);
     let raw_path = path.clone()
         .into_iter()
@@ -288,21 +279,15 @@ fn parse_use(p: Pair<Rule>, types: &mut TypeResolver) -> Result<Value> {
         .collect::<Vec<_>>()
         .join("/");
     let path = format!("{}.rpc", path);
+
     let contents = types
         .load(&path)
         .chain_err(|| InternalError::load_error(&p, &path))?;
-
-    // let mut file =
-    //     File::open(path.clone()).map_err(|e| InternalError::load_error(&p, &path, &e.to_string()))?;
-    // let mut contents = String::new();
-    // file.read_to_string(&mut contents)
-    //     .map_err(|e| InternalError::load_error(&p, &path, &e.to_string()))?;
-
-    let pairs = RpcParser::parse(Rule::File, &contents)
-        .map_err(|e| InternalError::parse_error(e))
+    let pairs = types
+        .parse(&contents)
         .chain_err(|| InternalError::load_error(&p, &path))?;
 
-    types.enter_dir(&path);
+    types.enter_dir(&path)?;
     types.enter_ns(&raw_path);
     let _ = parse(pairs, types).chain_err(|| InternalError::load_error(&p, &path))?;
     types.exit_ns();
@@ -314,7 +299,7 @@ fn parse_use(p: Pair<Rule>, types: &mut TypeResolver) -> Result<Value> {
     }))
 }
 
-fn parse_module(p: Pair<Rule>, types: &mut TypeResolver) -> Result<Value> {
+fn parse_module(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
     let module = get!(p, Rule::Identifier)?.as_str();
     let mut nodes = Vec::new();
 
@@ -346,7 +331,7 @@ fn parse_module(p: Pair<Rule>, types: &mut TypeResolver) -> Result<Value> {
     }))
 }
 
-fn resolve_generic_type(p: Pair<Rule>, types: &TypeResolver) -> Result<Value> {
+fn resolve_generic_type(p: Pair<Rule>, types: &Resolver) -> Result<Value> {
     match get!(p, Rule::Template).ok() {
         Some(template) => {
             let mut tys = Vec::new();
@@ -370,7 +355,7 @@ fn resolve_generic_type(p: Pair<Rule>, types: &TypeResolver) -> Result<Value> {
     }
 }
 
-fn parse_struct(p: Pair<Rule>, types: &mut TypeResolver) -> Result<(String, Value)> {
+fn parse_struct(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> {
     let mut fields = Vec::new();
 
     for f in getm!(p, Rule::Field) {
@@ -401,7 +386,7 @@ fn parse_struct(p: Pair<Rule>, types: &mut TypeResolver) -> Result<(String, Valu
     ))
 }
 
-fn parse_enum(p: Pair<Rule>, types: &mut TypeResolver) -> Result<(String, Value)> {
+fn parse_enum(p: Pair<Rule>, types: &mut Resolver) -> Result<(String, Value)> {
     let mut fields = Vec::new();
 
     let uty = get!(p, Rule::Type)?;
@@ -433,7 +418,7 @@ fn parse_enum(p: Pair<Rule>, types: &mut TypeResolver) -> Result<(String, Value)
     ))
 }
 
-fn parse_interface(p: Pair<Rule>, types: &mut TypeResolver) -> Result<Value> {
+fn parse_interface(p: Pair<Rule>, types: &mut Resolver) -> Result<Value> {
     let mut funcs = Vec::new();
 
     for f in getm!(p, Rule::Function) {
@@ -492,16 +477,4 @@ pub fn run() {
         .map_err(|e| panic!("{}", e.display_chain().to_string()))
         .unwrap();
     println!("{}", serde_json::to_string_pretty(&j).unwrap());
-
-    // let mut ast = Ast::new();
-
-    // for pair in pairs {
-    //     match pair.as_rule() {
-    //         Rule::Use => ast.add_use(&pair),
-    //         Rule::Module => {}
-    //         Rule::EOI => {}
-    //         _ => unreachable!(),
-    //     }
-    //     println!("{:#?}", pair.as_rule());
-    // }
 }
