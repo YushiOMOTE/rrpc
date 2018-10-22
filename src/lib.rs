@@ -380,11 +380,29 @@ fn generate(path: &str) -> Result<Value> {
     generate_defs(pairs, &mut resolver)
 }
 
+fn load(path: &str, ns: &str, resolver: &mut Resolver) -> Result<()> {
+    debug!("Loading module: {} ({})", ns, path);
+
+    let contents = resolver.load(path)?;
+
+    resolver.enter_dir(&path)?;
+    resolver.enter_ns(&ns);
+
+    let pairs = parse(resolver.current_file(), &contents)?;
+
+    let _ = generate_defs(pairs, resolver)?;
+
+    resolver.exit_ns();
+    resolver.exit_dir();
+
+    Ok(())
+}
+
 fn generate_use(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
     trace!("Generating use:\n {}", p.as_str());
 
     let path = get_all(&p, Rule::Path);
-    let raw_path = path.clone()
+    let ns = path.clone()
         .into_iter()
         .map(|p| p.as_str())
         .collect::<Vec<_>>()
@@ -397,25 +415,10 @@ fn generate_use(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
 
     let file = resolver.current_file().to_string();
 
-    let contents = resolver
-        .load(&path)
-        .chain_err(|| InternalError::load_error(&file, &p, &path))?;
-
-    resolver
-        .enter_dir(&path)
-        .chain_err(|| InternalError::load_error(&file, &p, &path))?;
-    resolver.enter_ns(&raw_path);
-
-    let pairs = parse(resolver.current_file(), &contents)
-        .chain_err(|| InternalError::load_error(&file, &p, &path))?;
-
-    let _ =
-        generate_defs(pairs, resolver).chain_err(|| InternalError::load_error(&file, &p, &path))?;
-    resolver.exit_ns();
-    resolver.exit_dir();
+    load(&path, &ns, resolver).chain_err(|| InternalError::load_error(&file, &p, &path))?;
 
     Ok(json!({
-        "module": raw_path,
+        "namespace": ns,
         "path": path,
     }))
 }
