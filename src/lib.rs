@@ -60,87 +60,77 @@ fn get_comment<'a>(p: &'a Pair<Rule>) -> Option<&'a str> {
     get_opt(&p, Rule::Comment).map(|p| p.as_str())
 }
 
-#[derive(Debug)]
-pub enum InternalError {
-    FileError(String),
-    TypeNotFound(String, PestError<Rule>),
-    LoadError(String, PestError<Rule>),
-    ParseError(String, PestError<Rule>),
-    Duplicated(String, PestError<Rule>),
-}
-
 error_chain! {
-    foreign_links {
-        Internal(InternalError);
-    }
-}
+    errors {
+        FileError(e: String) {
+            description("i/o error")
+                display("{}", e)
+        }
 
-impl InternalError {
-    fn file_error<T: ToString>(e: T) -> Error {
-        InternalError::FileError(e.to_string()).into()
-    }
+        TypeNotFound(path: String, e: PestError<Rule>) {
+            description("compile error")
+                display("{}:\n {}", path, e)
+        }
 
-    fn type_not_found(path: &str, p: &Pair<Rule>) -> Error {
-        InternalError::TypeNotFound(
-            path.into(),
-            PestError::new_from_span(
-                ErrorVariant::CustomError {
-                    message: format!("type not found: {}", p.as_str()),
-                },
-                p.as_span(),
-            ),
-        ).into()
-    }
+        LoadError(path: String, e: PestError<Rule>) {
+            description("compile error")
+                display("{}:\n {}", path, e)
+        }
 
-    fn load_error(path: &str, p: &Pair<Rule>, module: &str) -> Error {
-        InternalError::LoadError(
-            path.into(),
-            PestError::new_from_span(
-                ErrorVariant::CustomError {
-                    message: format!("couldn't load module: {}", module),
-                },
-                p.as_span(),
-            ),
-        ).into()
-    }
+        ParseError(path: String, e: PestError<Rule>) {
+            description("compile error")
+                display("{}:\n {}", path, e)
+        }
 
-    fn duplicated(name: &str, path: &str, p: &Pair<Rule>) -> Error {
-        InternalError::Duplicated(
-            path.into(),
-            PestError::new_from_span(
-                ErrorVariant::CustomError {
-                    message: format!("duplicated {}: {}", name, p.as_str()),
-                },
-                p.as_span(),
-            ),
-        ).into()
-    }
-
-    fn parse_error(path: &str, e: PestError<Rule>) -> Error {
-        InternalError::ParseError(path.into(), e).into()
-    }
-}
-
-impl fmt::Display for InternalError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            InternalError::FileError(e) => write!(f, "{}", e),
-            InternalError::TypeNotFound(path, e) => write!(f, "{}:\n {}", path, e),
-            InternalError::LoadError(path, e) => write!(f, "{}:\n {}", path, e),
-            InternalError::ParseError(path, e) => write!(f, "{}:\n {}", path, e),
-            InternalError::Duplicated(path, e) => write!(f, "{}:\n {}", path, e),
+        Duplicated(path: String, e: PestError<Rule>) {
+            description("compile error")
+                display("{}:\n {}", path, e)
         }
     }
 }
 
-impl std::error::Error for InternalError {
-    fn description(&self) -> &str {
-        "compile error"
-    }
+fn file_error<T: ToString>(e: T) -> Error {
+    ErrorKind::FileError(e.to_string()).into()
+}
 
-    fn cause(&self) -> Option<&std::error::Error> {
-        None
-    }
+fn type_not_found(path: &str, p: &Pair<Rule>) -> Error {
+    ErrorKind::TypeNotFound(
+        path.into(),
+        PestError::new_from_span(
+            ErrorVariant::CustomError {
+                message: format!("type not found: {}", p.as_str()),
+            },
+            p.as_span(),
+        ),
+    ).into()
+}
+
+fn load_error(path: &str, p: &Pair<Rule>, module: &str) -> Error {
+    ErrorKind::LoadError(
+        path.into(),
+        PestError::new_from_span(
+            ErrorVariant::CustomError {
+                message: format!("couldn't load module: {}", module),
+            },
+            p.as_span(),
+        ),
+    ).into()
+}
+
+fn duplicated(name: &str, path: &str, p: &Pair<Rule>) -> Error {
+    ErrorKind::Duplicated(
+        path.into(),
+        PestError::new_from_span(
+            ErrorVariant::CustomError {
+                message: format!("duplicated {}: {}", name, p.as_str()),
+            },
+            p.as_span(),
+        ),
+    ).into()
+}
+
+fn parse_error(path: &str, e: PestError<Rule>) -> Error {
+    ErrorKind::ParseError(path.into(), e).into()
 }
 
 struct DupChecker<'a> {
@@ -162,7 +152,7 @@ impl<'a> DupChecker<'a> {
         if self.set.insert(p.as_str().into()) {
             Ok(())
         } else {
-            Err(InternalError::duplicated(self.name, self.path, p))
+            Err(duplicated(self.name, self.path, p))
         }
     }
 }
@@ -213,7 +203,7 @@ impl Resolver {
         self.types
             .get(path.as_str())
             .map(|p| p.clone())
-            .ok_or(InternalError::type_not_found(self.current_file(), path))
+            .ok_or(type_not_found(self.current_file(), path))
     }
 
     fn resolve_generic_type(&self, p: Pair<Rule>) -> Result<Value> {
@@ -258,10 +248,10 @@ impl Resolver {
 
         debug!("Loading path: {}", path.to_string_lossy());
 
-        let mut file = File::open(path).map_err(|e| InternalError::file_error(e))?;
+        let mut file = File::open(path).map_err(|e| file_error(e))?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)
-            .map_err(|e| InternalError::file_error(e))?;
+            .map_err(|e| file_error(e))?;
 
         Ok(contents)
     }
@@ -269,8 +259,7 @@ impl Resolver {
     fn enter_dir(&mut self, dir: &str) -> Result<()> {
         let path = Path::new(&self.current_dir()).join(dir);
 
-        let path = path.canonicalize()
-            .map_err(|e| InternalError::file_error(e))?;
+        let path = path.canonicalize().map_err(|e| file_error(e))?;
 
         self.directory.push(path);
 
@@ -314,7 +303,7 @@ impl Resolver {
 }
 
 fn parse<'a>(path: &str, s: &'a str) -> Result<Pairs<'a, Rule>> {
-    RpcParser::parse(Rule::File, s).map_err(|e| InternalError::parse_error(path.into(), e))
+    RpcParser::parse(Rule::File, s).map_err(|e| parse_error(path.into(), e))
 }
 
 fn generate_defs(pairs: Pairs<Rule>, resolver: &mut Resolver) -> Result<Value> {
@@ -415,7 +404,7 @@ fn generate_use(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
 
     let file = resolver.current_file().to_string();
 
-    load(&path, &ns, resolver).chain_err(|| InternalError::load_error(&file, &p, &path))?;
+    load(&path, &ns, resolver).chain_err(|| load_error(&file, &p, &path))?;
 
     Ok(json!({
         "namespace": ns,
