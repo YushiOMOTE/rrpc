@@ -59,88 +59,86 @@ fn get_comment<'a>(p: &'a Pair<Rule>) -> Option<&'a str> {
 
 error_chain! {
     errors {
+        Error(path: String) {
+            description("compile error")
+                display("{}", path)
+        }
+
         FileError(e: String) {
             description("i/o error")
                 display("{}", e)
         }
 
-        TypeNotFound(path: String, e: PestError<Rule>) {
+        TypeNotFound(e: PestError<Rule>) {
             description("compile error")
-                display("{}:\n {}", path, e)
+                display("{}", e)
         }
 
-        LoadError(path: String, e: PestError<Rule>) {
+        LoadError(e: PestError<Rule>) {
             description("compile error")
-                display("{}:\n {}", path, e)
+                display("{}", e)
         }
 
-        ParseError(path: String, e: PestError<Rule>) {
+        ParseError(e: PestError<Rule>) {
             description("compile error")
-                display("{}:\n {}", path, e)
+                display("{}", e)
         }
 
-        Duplicated(path: String, e: PestError<Rule>) {
+        Duplicated(e: PestError<Rule>) {
             description("compile error")
-                display("{}:\n {}", path, e)
+                display("{}", e)
         }
     }
+}
+
+fn error(path: &str) -> Error {
+    ErrorKind::Error(path.to_string()).into()
 }
 
 fn file_error<T: ToString>(e: T) -> Error {
     ErrorKind::FileError(e.to_string()).into()
 }
 
-fn type_not_found(path: &str, p: &Pair<Rule>) -> Error {
-    ErrorKind::TypeNotFound(
-        path.into(),
-        PestError::new_from_span(
-            ErrorVariant::CustomError {
-                message: format!("type not found: {}", p.as_str()),
-            },
-            p.as_span(),
-        ),
-    ).into()
+fn type_not_found(p: &Pair<Rule>) -> Error {
+    ErrorKind::TypeNotFound(PestError::new_from_span(
+        ErrorVariant::CustomError {
+            message: format!("type not found: {}", p.as_str()),
+        },
+        p.as_span(),
+    )).into()
 }
 
-fn load_error(path: &str, p: &Pair<Rule>, module: &str) -> Error {
-    ErrorKind::LoadError(
-        path.into(),
-        PestError::new_from_span(
-            ErrorVariant::CustomError {
-                message: format!("couldn't load module: {}", module),
-            },
-            p.as_span(),
-        ),
-    ).into()
+fn load_error(p: &Pair<Rule>, module: &str) -> Error {
+    ErrorKind::LoadError(PestError::new_from_span(
+        ErrorVariant::CustomError {
+            message: format!("couldn't load module: {}", module),
+        },
+        p.as_span(),
+    )).into()
 }
 
-fn duplicated(name: &str, path: &str, p: &Pair<Rule>) -> Error {
-    ErrorKind::Duplicated(
-        path.into(),
-        PestError::new_from_span(
-            ErrorVariant::CustomError {
-                message: format!("duplicated {}: {}", name, p.as_str()),
-            },
-            p.as_span(),
-        ),
-    ).into()
+fn duplicated(name: &str, p: &Pair<Rule>) -> Error {
+    ErrorKind::Duplicated(PestError::new_from_span(
+        ErrorVariant::CustomError {
+            message: format!("duplicated {}: {}", name, p.as_str()),
+        },
+        p.as_span(),
+    )).into()
 }
 
-fn parse_error(path: &str, e: PestError<Rule>) -> Error {
-    ErrorKind::ParseError(path.into(), e).into()
+fn parse_error(e: PestError<Rule>) -> Error {
+    ErrorKind::ParseError(e).into()
 }
 
 struct DupChecker<'a> {
     name: &'a str,
-    path: &'a str,
     set: HashSet<String>,
 }
 
 impl<'a> DupChecker<'a> {
-    fn new(name: &'a str, path: &'a str) -> DupChecker<'a> {
+    fn new(name: &'a str) -> DupChecker<'a> {
         DupChecker {
             name,
-            path: path.into(),
             set: HashSet::new(),
         }
     }
@@ -149,7 +147,7 @@ impl<'a> DupChecker<'a> {
         if self.set.insert(p.as_str().into()) {
             Ok(())
         } else {
-            Err(duplicated(self.name, self.path, p))
+            Err(duplicated(self.name, p))
         }
     }
 }
@@ -196,10 +194,6 @@ impl Loader {
         self.directory.pop();
 
         debug!("Exited to directory: {}", self.current_dir());
-    }
-
-    fn current_file(&self) -> &str {
-        self.directory.last().and_then(|p| p.to_str()).unwrap_or("")
     }
 
     fn current_dir(&self) -> String {
@@ -258,7 +252,7 @@ impl Resolver {
         self.types
             .get(path.as_str())
             .map(|p| p.clone())
-            .ok_or(type_not_found("".into(), path))
+            .ok_or(type_not_found(path))
     }
 
     fn resolve_generic_type(&self, p: &Pair<Rule>) -> Result<Value> {
@@ -309,8 +303,8 @@ impl Resolver {
     }
 }
 
-fn parse<'a>(path: &str, s: &'a str) -> Result<Pairs<'a, Rule>> {
-    RpcParser::parse(Rule::File, s).map_err(|e| parse_error(path.into(), e))
+fn parse<'a>(s: &'a str) -> Result<Pairs<'a, Rule>> {
+    RpcParser::parse(Rule::File, s).map_err(|e| parse_error(e))
 }
 
 struct Generator {
@@ -333,7 +327,7 @@ impl Generator {
 
         self.loader.enter_dir(path)?;
 
-        let pairs = parse(self.loader.current_file(), &contents)?;
+        let pairs = parse(&contents)?;
         let model = self.generate_defs(pairs)?;
 
         self.loader.exit_dir();
@@ -349,7 +343,7 @@ impl Generator {
         self.loader.enter_dir(&path)?;
         self.resolver.enter_ns(&ns);
 
-        let pairs = parse(self.loader.current_file(), &contents)?;
+        let pairs = parse(&contents)?;
         let _ = self.generate_defs(pairs)?;
 
         self.resolver.exit_ns();
@@ -362,10 +356,8 @@ impl Generator {
         let mut uses = Vec::new();
         let mut nodes = Vec::new();
 
-        let current = self.loader.current_file().to_string();
-
-        let mut ty_checker = DupChecker::new("type name", &current);
-        let mut if_checker = DupChecker::new("interface name", &current);
+        let mut ty_checker = DupChecker::new("type name");
+        let mut if_checker = DupChecker::new("interface name");
 
         for p in pairs {
             match p.as_rule() {
@@ -422,11 +414,11 @@ impl Generator {
             .collect::<Vec<_>>()
             .join("/");
         let path = format!("{}.rpc", path);
-
-        let file = self.loader.current_file().to_string();
+        let fullpath = format!("{}/{}", self.loader.current_dir(), path);
 
         self.load_submodule(&path, &ns)
-            .chain_err(|| load_error(&file, &p, &path))?;
+            .chain_err(|| error(&path))
+            .chain_err(|| load_error(&p, &fullpath))?;
 
         Ok(json!({
             "namespace": ns,
@@ -437,7 +429,7 @@ impl Generator {
     fn generate_struct<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Value)> {
         trace!("Generating struct:\n {}", p.as_str());
 
-        let mut checker = DupChecker::new("struct member name", &self.loader.current_file());
+        let mut checker = DupChecker::new("struct member name");
 
         let mut fields = Vec::new();
 
@@ -474,7 +466,7 @@ impl Generator {
     fn generate_enum<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Value)> {
         trace!("Generating enum:\n {}", p.as_str());
 
-        let mut checker = DupChecker::new("enum variant name", &self.loader.current_file());
+        let mut checker = DupChecker::new("enum variant name");
 
         let mut fields = Vec::new();
 
@@ -514,7 +506,7 @@ impl Generator {
 
         let mut funcs = Vec::new();
 
-        let mut checker = DupChecker::new("function name", &self.loader.current_file());
+        let mut checker = DupChecker::new("function name");
 
         for f in get_all(&p, Rule::Function) {
             let comment = get_comment(&p);
@@ -523,7 +515,7 @@ impl Generator {
 
             checker.check(&ident)?;
 
-            let mut arg_checker = DupChecker::new("argument name", &self.loader.current_file());
+            let mut arg_checker = DupChecker::new("argument name");
 
             for a in get_all(&f, Rule::Argument) {
                 let ident = get(&a, Rule::Identifier);
@@ -578,5 +570,8 @@ impl Generator {
 pub fn compile(path: &str) -> Result<Value> {
     let mut gen = Generator::new();
 
-    gen.generate(path)
+    let cwd = std::env::current_dir().map_err(|e| ErrorKind::FileError(e.to_string()))?;
+    let fullpath = format!("{}/{}", cwd.to_string_lossy(), path);
+
+    gen.generate(path).chain_err(|| error(&fullpath))
 }
