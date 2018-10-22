@@ -20,14 +20,11 @@ struct RpcParser;
 
 use std::fs::File;
 use std::io::prelude::*;
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::collections::HashSet;
 
 use serde_json::value::Value;
-
-use error_chain::ChainedError;
 
 fn get<'a>(p: &Pair<'a, Rule>, rule: Rule) -> Pair<'a, Rule> {
     match get_opt(p, rule) {
@@ -157,88 +154,15 @@ impl<'a> DupChecker<'a> {
     }
 }
 
-struct Resolver {
-    types: HashMap<String, Value>,
-    namespace: Vec<String>,
+struct Loader {
     directory: Vec<PathBuf>,
 }
 
-fn primitive(types: &mut HashMap<String, Value>, name: &str) {
-    types.insert(
-        name.into(),
-        json!({
-        "name": name,
-        "type": "primitive",
-    }),
-    );
-}
-
-impl Resolver {
+impl Loader {
     fn new() -> Self {
-        let mut types = HashMap::new();
-
-        primitive(&mut types, "bool");
-        primitive(&mut types, "u8");
-        primitive(&mut types, "u16");
-        primitive(&mut types, "u32");
-        primitive(&mut types, "u64");
-        primitive(&mut types, "i8");
-        primitive(&mut types, "i16");
-        primitive(&mut types, "i32");
-        primitive(&mut types, "i64");
-        primitive(&mut types, "f32");
-        primitive(&mut types, "f64");
-        primitive(&mut types, "string");
-
         Self {
-            types,
-            namespace: Vec::new(),
             directory: Vec::new(),
         }
-    }
-
-    fn resolve_type(&self, path: &Pair<Rule>) -> Result<Value> {
-        debug!("Lookup type: {}", path.as_str());
-
-        self.types
-            .get(path.as_str())
-            .map(|p| p.clone())
-            .ok_or(type_not_found(self.current_file(), path))
-    }
-
-    fn resolve_generic_type(&self, p: Pair<Rule>) -> Result<Value> {
-        match get_opt(&p, Rule::Template) {
-            Some(template) => {
-                let mut tys = Vec::new();
-
-                for gty in get_all(&template, Rule::GenericType) {
-                    tys.push(self.resolve_generic_type(gty)?);
-                }
-
-                let ident = get(&template, Rule::Identifier).as_str();
-
-                Ok(json!({
-                    "name": ident,
-                    "type": "template",
-                    "subtypes": tys,
-                }))
-            }
-            None => {
-                let ty = get(&p, Rule::Type);
-                self.resolve_type(&ty)
-            }
-        }
-    }
-
-    fn add_type(&mut self, ident: &str, value: Value) {
-        let path = match self.namespace.last() {
-            Some(namespace) => format!("{}::{}", namespace, ident),
-            None => ident.to_string(),
-        };
-
-        debug!("Add type: {}", path);
-
-        self.types.insert(path, value);
     }
 
     fn load(&self, path: &str) -> Result<String> {
@@ -288,6 +212,89 @@ impl Resolver {
             })
             .unwrap_or("".into())
     }
+}
+
+struct Resolver {
+    types: HashMap<String, Value>,
+    namespace: Vec<String>,
+}
+
+fn primitive(types: &mut HashMap<String, Value>, name: &str) {
+    types.insert(
+        name.into(),
+        json!({
+        "name": name,
+        "type": "primitive",
+    }),
+    );
+}
+
+impl Resolver {
+    fn new() -> Self {
+        let mut types = HashMap::new();
+
+        primitive(&mut types, "bool");
+        primitive(&mut types, "u8");
+        primitive(&mut types, "u16");
+        primitive(&mut types, "u32");
+        primitive(&mut types, "u64");
+        primitive(&mut types, "i8");
+        primitive(&mut types, "i16");
+        primitive(&mut types, "i32");
+        primitive(&mut types, "i64");
+        primitive(&mut types, "f32");
+        primitive(&mut types, "f64");
+        primitive(&mut types, "string");
+
+        Self {
+            types,
+            namespace: Vec::new(),
+        }
+    }
+
+    fn resolve_type(&self, path: &Pair<Rule>) -> Result<Value> {
+        debug!("Lookup type: {}", path.as_str());
+
+        self.types
+            .get(path.as_str())
+            .map(|p| p.clone())
+            .ok_or(type_not_found("".into(), path))
+    }
+
+    fn resolve_generic_type(&self, p: &Pair<Rule>) -> Result<Value> {
+        match get_opt(&p, Rule::Template) {
+            Some(template) => {
+                let mut tys = Vec::new();
+
+                for gty in get_all(&template, Rule::GenericType) {
+                    tys.push(self.resolve_generic_type(&gty)?);
+                }
+
+                let ident = get(&template, Rule::Identifier).as_str();
+
+                Ok(json!({
+                    "name": ident,
+                    "type": "template",
+                    "subtypes": tys,
+                }))
+            }
+            None => {
+                let ty = get(&p, Rule::Type);
+                self.resolve_type(&ty)
+            }
+        }
+    }
+
+    fn add_type(&mut self, ident: &str, value: Value) {
+        let path = match self.namespace.last() {
+            Some(namespace) => format!("{}::{}", namespace, ident),
+            None => ident.to_string(),
+        };
+
+        debug!("Add type: {}", path);
+
+        self.types.insert(path, value);
+    }
 
     fn enter_ns(&mut self, module: &str) {
         self.namespace.push(module.into());
@@ -306,261 +313,270 @@ fn parse<'a>(path: &str, s: &'a str) -> Result<Pairs<'a, Rule>> {
     RpcParser::parse(Rule::File, s).map_err(|e| parse_error(path.into(), e))
 }
 
-fn generate_defs(pairs: Pairs<Rule>, resolver: &mut Resolver) -> Result<Value> {
-    let mut uses = Vec::new();
-    let mut nodes = Vec::new();
+struct Generator {
+    resolver: Resolver,
+    loader: Loader,
+}
 
-    let current = resolver.current_file().to_string();
-
-    let mut ty_checker = DupChecker::new("type name", &current);
-    let mut if_checker = DupChecker::new("interface name", &current);
-
-    for p in pairs {
-        match p.as_rule() {
-            Rule::Use => {
-                uses.push(generate_use(p, resolver)?);
-            }
-            Rule::Struct => {
-                let (ident, value) = generate_struct(p, resolver)?;
-
-                ty_checker.check(&ident)?;
-
-                resolver.add_type(ident.as_str(), value.clone());
-
-                nodes.push(value);
-            }
-            Rule::Enum => {
-                let (ident, value) = generate_enum(p, resolver)?;
-
-                ty_checker.check(&ident)?;
-
-                resolver.add_type(ident.as_str(), value.clone());
-
-                nodes.push(value);
-            }
-            Rule::Interface => {
-                let (ident, value) = generate_interface(p, resolver)?;
-
-                if_checker.check(&ident)?;
-
-                nodes.push(value);
-            }
-            Rule::EOI => {}
-            _ => unreachable!("unexpected token {:?}", p),
+impl Generator {
+    fn new() -> Self {
+        Self {
+            resolver: Resolver::new(),
+            loader: Loader::new(),
         }
     }
 
-    Ok(json!({
-        "uses": uses,
-        "nodes": nodes,
-    }))
-}
+    fn generate(&mut self, path: &str) -> Result<Value> {
+        debug!("Generating from {}", path);
 
-fn generate(path: &str) -> Result<Value> {
-    debug!("Generating from {}", path);
+        let contents = self.loader.load(path)?;
 
-    let mut resolver = Resolver::new();
+        self.loader.enter_dir(path)?;
 
-    let contents = resolver.load(path)?;
+        let pairs = parse(self.loader.current_file(), &contents)?;
+        let model = self.generate_defs(pairs)?;
 
-    resolver.enter_dir(path)?;
+        self.loader.exit_dir();
 
-    let pairs = parse(resolver.current_file(), &contents)?;
-    generate_defs(pairs, &mut resolver)
-}
-
-fn load(path: &str, ns: &str, resolver: &mut Resolver) -> Result<()> {
-    debug!("Loading module: {} ({})", ns, path);
-
-    let contents = resolver.load(path)?;
-
-    resolver.enter_dir(&path)?;
-    resolver.enter_ns(&ns);
-
-    let pairs = parse(resolver.current_file(), &contents)?;
-
-    let _ = generate_defs(pairs, resolver)?;
-
-    resolver.exit_ns();
-    resolver.exit_dir();
-
-    Ok(())
-}
-
-fn generate_use(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
-    trace!("Generating use:\n {}", p.as_str());
-
-    let path = get_all(&p, Rule::Path);
-    let ns = path.clone()
-        .into_iter()
-        .map(|p| p.as_str())
-        .collect::<Vec<_>>()
-        .join("::");
-    let path = path.into_iter()
-        .map(|p| p.as_str())
-        .collect::<Vec<_>>()
-        .join("/");
-    let path = format!("{}.rpc", path);
-
-    let file = resolver.current_file().to_string();
-
-    load(&path, &ns, resolver).chain_err(|| load_error(&file, &p, &path))?;
-
-    Ok(json!({
-        "namespace": ns,
-        "path": path,
-    }))
-}
-
-fn generate_struct<'a>(
-    p: Pair<'a, Rule>,
-    resolver: &mut Resolver,
-) -> Result<(Pair<'a, Rule>, Value)> {
-    trace!("Generating struct:\n {}", p.as_str());
-
-    let mut checker = DupChecker::new("struct member name", &resolver.current_file());
-
-    let mut fields = Vec::new();
-
-    for f in get_all(&p, Rule::Field) {
-        let comment = get_comment(&f);
-        let ident = get(&f, Rule::Identifier);
-        let gty = get(&f, Rule::GenericType);
-        let value = get_opt(&f, Rule::Value).map(|p| p.as_str());
-
-        checker.check(&ident)?;
-
-        fields.push(json!({
-            "comment": comment,
-            "name": ident.as_str(),
-            "type": resolver.resolve_generic_type(gty)?,
-            "value": value,
-        }));
+        Ok(model)
     }
 
-    let comment = get_comment(&p);
-    let ident = get(&p, Rule::Identifier);
+    fn load_submodule(&mut self, path: &str, ns: &str) -> Result<()> {
+        debug!("Loading submodule: {} ({})", ns, path);
 
-    Ok((
-        ident.clone(),
-        json!({
-            "comment" : comment,
-            "name": ident.as_str(),
-            "type": "struct",
-            "fields": fields,
-        }),
-    ))
-}
+        let contents = self.loader.load(path)?;
 
-fn generate_enum<'a>(
-    p: Pair<'a, Rule>,
-    resolver: &mut Resolver,
-) -> Result<(Pair<'a, Rule>, Value)> {
-    trace!("Generating enum:\n {}", p.as_str());
+        self.loader.enter_dir(&path)?;
+        self.resolver.enter_ns(&ns);
 
-    let mut checker = DupChecker::new("enum variant name", &resolver.current_file());
+        let pairs = parse(self.loader.current_file(), &contents)?;
+        let _ = self.generate_defs(pairs)?;
 
-    let mut fields = Vec::new();
+        self.resolver.exit_ns();
+        self.loader.exit_dir();
 
-    let uty = get(&p, Rule::Type);
-
-    for f in get_all(&p, Rule::Variant) {
-        let comment = get_comment(&f);
-        let ident = get(&f, Rule::Identifier);
-        let value = get_opt(&f, Rule::Value).map(|p| p.as_str());
-
-        checker.check(&ident)?;
-
-        fields.push(json!({
-            "comment": comment,
-            "name": ident.as_str(),
-            "type": resolver.resolve_type(&uty)?,
-            "value": value,
-        }));
+        Ok(())
     }
 
-    let comment = get_comment(&p);
-    let ident = get(&p, Rule::Identifier);
+    fn generate_defs(&mut self, pairs: Pairs<Rule>) -> Result<Value> {
+        let mut uses = Vec::new();
+        let mut nodes = Vec::new();
 
-    Ok((
-        ident.clone(),
-        json!({
-            "comment" : comment,
-            "name": ident.as_str(),
-            "type": resolver.resolve_type(&uty)?,
-            "fields": fields,
-        }),
-    ))
-}
+        let current = self.loader.current_file().to_string();
 
-fn generate_interface<'a>(
-    p: Pair<'a, Rule>,
-    resolver: &mut Resolver,
-) -> Result<(Pair<'a, Rule>, Value)> {
-    trace!("Generating interface:\n {}", p.as_str());
+        let mut ty_checker = DupChecker::new("type name", &current);
+        let mut if_checker = DupChecker::new("interface name", &current);
 
-    let mut funcs = Vec::new();
+        for p in pairs {
+            match p.as_rule() {
+                Rule::Use => {
+                    uses.push(self.generate_use(p)?);
+                }
+                Rule::Struct => {
+                    let (ident, value) = self.generate_struct(p)?;
 
-    let mut checker = DupChecker::new("function name", &resolver.current_file());
+                    ty_checker.check(&ident)?;
 
-    for f in get_all(&p, Rule::Function) {
+                    self.resolver.add_type(ident.as_str(), value.clone());
+
+                    nodes.push(value);
+                }
+                Rule::Enum => {
+                    let (ident, value) = self.generate_enum(p)?;
+
+                    ty_checker.check(&ident)?;
+
+                    self.resolver.add_type(ident.as_str(), value.clone());
+
+                    nodes.push(value);
+                }
+                Rule::Interface => {
+                    let (ident, value) = self.generate_interface(p)?;
+
+                    if_checker.check(&ident)?;
+
+                    nodes.push(value);
+                }
+                Rule::EOI => {}
+                _ => unreachable!("unexpected token {:?}", p),
+            }
+        }
+
+        Ok(json!({
+            "uses": uses,
+            "nodes": nodes,
+        }))
+    }
+
+    fn generate_use(&mut self, p: Pair<Rule>) -> Result<Value> {
+        trace!("Generating use: {}", p.as_str());
+
+        let path = get_all(&p, Rule::Path);
+        let ns = path.clone()
+            .into_iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
+        let path = path.into_iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join("/");
+        let path = format!("{}.rpc", path);
+
+        let file = self.loader.current_file().to_string();
+
+        self.load_submodule(&path, &ns)
+            .chain_err(|| load_error(&file, &p, &path))?;
+
+        Ok(json!({
+            "namespace": ns,
+            "path": path,
+        }))
+    }
+
+    fn generate_struct<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Value)> {
+        trace!("Generating struct:\n {}", p.as_str());
+
+        let mut checker = DupChecker::new("struct member name", &self.loader.current_file());
+
+        let mut fields = Vec::new();
+
+        for f in get_all(&p, Rule::Field) {
+            let comment = get_comment(&f);
+            let ident = get(&f, Rule::Identifier);
+            let gty = get(&f, Rule::GenericType);
+            let value = get_opt(&f, Rule::Value).map(|p| p.as_str());
+
+            checker.check(&ident)?;
+
+            fields.push(json!({
+                "comment": comment,
+                "name": ident.as_str(),
+                "type": self.resolver.resolve_generic_type(&gty)?,
+                "value": value,
+            }));
+        }
+
         let comment = get_comment(&p);
-        let ident = get(&f, Rule::Identifier);
-        let mut args = Vec::new();
+        let ident = get(&p, Rule::Identifier);
 
-        checker.check(&ident)?;
-
-        let mut arg_checker = DupChecker::new("argument name", &resolver.current_file());
-
-        for a in get_all(&f, Rule::Argument) {
-            let ident = get(&a, Rule::Identifier);
-            let ty = get(&a, Rule::Type);
-
-            arg_checker.check(&ident)?;
-
-            args.push(json!({
-                    "name": ident.as_str(),
-                    "type": resolver.resolve_type(&ty)?,
-                }));
-        }
-
-        let r = get_opt(&f, Rule::ReturnType);
-        let r = if let Some(r) = r {
-            let mut rs = Vec::new();
-
-            for ty in get_all(&r, Rule::Type) {
-                rs.push(json!(ty.as_str()));
-            }
-
-            Some(rs)
-        } else {
-            None
-        };
-
-        funcs.push(json!({
-            "comment": comment,
-            "name": ident.as_str(),
-            "args": args,
-            "return": r,
-        }));
+        Ok((
+            ident.clone(),
+            json!({
+                "comment" : comment,
+                "name": ident.as_str(),
+                "type": "struct",
+                "fields": fields,
+            }),
+        ))
     }
 
-    let comment = get_comment(&p);
-    let ident = get(&p, Rule::Identifier);
-    let pattern = get(&p, Rule::Pattern).as_str();
+    fn generate_enum<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Value)> {
+        trace!("Generating enum:\n {}", p.as_str());
 
-    Ok((
-        ident.clone(),
-        json!({
-        "comment" : comment,
-        "name": ident.as_str(),
-        "pattern": pattern,
-        "type": "interface",
-        "funcs": funcs,
-    }),
-    ))
+        let mut checker = DupChecker::new("enum variant name", &self.loader.current_file());
+
+        let mut fields = Vec::new();
+
+        let uty = get(&p, Rule::Type);
+
+        for f in get_all(&p, Rule::Variant) {
+            let comment = get_comment(&f);
+            let ident = get(&f, Rule::Identifier);
+            let value = get_opt(&f, Rule::Value).map(|p| p.as_str());
+
+            checker.check(&ident)?;
+
+            fields.push(json!({
+                "comment": comment,
+                "name": ident.as_str(),
+                "type": self.resolver.resolve_type(&uty)?,
+                "value": value,
+            }));
+        }
+
+        let comment = get_comment(&p);
+        let ident = get(&p, Rule::Identifier);
+
+        Ok((
+            ident.clone(),
+            json!({
+                "comment" : comment,
+                "name": ident.as_str(),
+                "type": self.resolver.resolve_type(&uty)?,
+                "fields": fields,
+            }),
+        ))
+    }
+
+    fn generate_interface<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Value)> {
+        trace!("Generating interface:\n {}", p.as_str());
+
+        let mut funcs = Vec::new();
+
+        let mut checker = DupChecker::new("function name", &self.loader.current_file());
+
+        for f in get_all(&p, Rule::Function) {
+            let comment = get_comment(&p);
+            let ident = get(&f, Rule::Identifier);
+            let mut args = Vec::new();
+
+            checker.check(&ident)?;
+
+            let mut arg_checker = DupChecker::new("argument name", &self.loader.current_file());
+
+            for a in get_all(&f, Rule::Argument) {
+                let ident = get(&a, Rule::Identifier);
+                let ty = get(&a, Rule::Type);
+
+                arg_checker.check(&ident)?;
+
+                args.push(json!({
+                    "name": ident.as_str(),
+                    "type": self.resolver.resolve_type(&ty)?,
+                }));
+            }
+
+            let r = get_opt(&f, Rule::ReturnType);
+            let r = if let Some(r) = r {
+                let mut rs = Vec::new();
+
+                for ty in get_all(&r, Rule::Type) {
+                    rs.push(json!(ty.as_str()));
+                }
+
+                Some(rs)
+            } else {
+                None
+            };
+
+            funcs.push(json!({
+                "comment": comment,
+                "name": ident.as_str(),
+                "args": args,
+                "return": r,
+            }));
+        }
+
+        let comment = get_comment(&p);
+        let ident = get(&p, Rule::Identifier);
+        let pattern = get(&p, Rule::Pattern).as_str();
+
+        Ok((
+            ident.clone(),
+            json!({
+                "comment" : comment,
+                "name": ident.as_str(),
+                "pattern": pattern,
+                "type": "interface",
+                "funcs": funcs,
+            }),
+        ))
+    }
 }
 
 pub fn compile(path: &str) -> Result<Value> {
-    generate(&path)
+    let mut gen = Generator::new();
+
+    gen.generate(path)
 }
