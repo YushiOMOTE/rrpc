@@ -395,18 +395,22 @@ fn generate_use(p: Pair<Rule>, resolver: &mut Resolver) -> Result<Value> {
         .join("/");
     let path = format!("{}.rpc", path);
 
+    let file = resolver.current_file().to_string();
+
     let contents = resolver
         .load(&path)
-        .chain_err(|| InternalError::load_error(resolver.current_file(), &p, &path))?;
-    let pairs = parse(resolver.current_file(), &contents)
-        .chain_err(|| InternalError::load_error(resolver.current_file(), &p, &path))?;
+        .chain_err(|| InternalError::load_error(&file, &p, &path))?;
 
     resolver
         .enter_dir(&path)
-        .chain_err(|| InternalError::load_error(resolver.current_file(), &p, &path))?;
+        .chain_err(|| InternalError::load_error(&file, &p, &path))?;
     resolver.enter_ns(&raw_path);
-    let _ = generate_defs(pairs, resolver)
-        .chain_err(|| InternalError::load_error(resolver.current_file(), &p, &path))?;
+
+    let pairs = parse(resolver.current_file(), &contents)
+        .chain_err(|| InternalError::load_error(&file, &p, &path))?;
+
+    let _ =
+        generate_defs(pairs, resolver).chain_err(|| InternalError::load_error(&file, &p, &path))?;
     resolver.exit_ns();
     resolver.exit_dir();
 
