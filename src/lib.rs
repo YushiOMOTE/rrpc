@@ -69,6 +69,11 @@ error_chain! {
                 display("{}", e)
         }
 
+        ValueError(e: PestError<Rule>) {
+            description("compile erorr")
+                display("{}", e)
+        }
+
         TypeNotFound(e: PestError<Rule>) {
             description("compile error")
                 display("{}", e)
@@ -97,6 +102,15 @@ fn error(path: &str) -> Error {
 
 fn file_error<T: ToString>(e: T) -> Error {
     ErrorKind::FileError(e.to_string()).into()
+}
+
+fn value_error<T: ToString>(p: &Pair<Rule>, e: T) -> Error {
+    ErrorKind::ValueError(PestError::new_from_span(
+        ErrorVariant::CustomError {
+            message: format!("value needs to be a valid json: {}", e.to_string()),
+        },
+        p.as_span(),
+    )).into()
 }
 
 fn type_not_found(p: &Pair<Rule>) -> Error {
@@ -307,6 +321,13 @@ fn parse<'a>(s: &'a str) -> Result<Pairs<'a, Rule>> {
     RpcParser::parse(Rule::File, s).map_err(|e| parse_error(e))
 }
 
+fn parse_value(p: &Pair<Rule>) -> Result<Option<Value>> {
+    match get_opt(p, Rule::Value).map(|p| p.as_str()) {
+        Some(s) => Ok(Some(serde_json::from_str(s).map_err(|e| value_error(p, e))?)),
+        None => Ok(None),
+    }
+}
+
 struct Generator {
     resolver: Resolver,
     loader: Loader,
@@ -437,7 +458,7 @@ impl Generator {
             let comment = get_comment(&f);
             let ident = get(&f, Rule::Identifier);
             let gty = get(&f, Rule::GenericType);
-            let value = get_opt(&f, Rule::Value).map(|p| p.as_str());
+            let value = parse_value(&f)?;
 
             checker.check(&ident)?;
 
@@ -475,7 +496,7 @@ impl Generator {
         for f in get_all(&p, Rule::Variant) {
             let comment = get_comment(&f);
             let ident = get(&f, Rule::Identifier);
-            let value = get_opt(&f, Rule::Value).map(|p| p.as_str());
+            let value = parse_value(&f)?;
 
             checker.check(&ident)?;
 
@@ -570,7 +591,7 @@ impl Generator {
 pub fn compile(path: &str) -> Result<Value> {
     let mut gen = Generator::new();
 
-    let cwd = std::env::current_dir().map_err(|e| ErrorKind::FileError(e.to_string()))?;
+    let cwd = std::env::current_dir().map_err(|e| file_error(e))?;
     let fullpath = format!("{}/{}", cwd.to_string_lossy(), path);
 
     gen.generate(path).chain_err(|| error(&fullpath))

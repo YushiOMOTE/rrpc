@@ -3,9 +3,9 @@ use sample;
 /// comment
 struct name {
     /// comment
-    x: sample::Coordinate {{0, 0}},
+    x: sample::Coordinate {[0, 0]},
     /// comment
-    y: vector<u32> {value},
+    y: vector<u32> {[1, 2, 3]},
 }
 
 /// comment
