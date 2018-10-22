@@ -328,16 +328,60 @@ fn parse_value(p: &Pair<Rule>) -> Result<Option<Value>> {
     }
 }
 
-struct Generator {
-    resolver: Resolver,
-    loader: Loader,
+pub trait LangGenerator {
+    fn generate_use(&mut self, value: Value) -> Result<Value> {
+        Ok(value)
+    }
+
+    fn generate_field(&mut self, value: Value) -> Result<Value> {
+        Ok(value)
+    }
+
+    fn generate_enum(&mut self, value: Value) -> Result<Value> {
+        Ok(value)
+    }
+
+    fn generate_variant(&mut self, value: Value) -> Result<Value> {
+        Ok(value)
+    }
+
+    fn generate_arg(&mut self, value: Value) -> Result<Value> {
+        Ok(value)
+    }
+
+    fn generate_struct(&mut self, value: Value) -> Result<Value> {
+        Ok(value)
+    }
+
+    fn generate_func(&mut self, value: Value) -> Result<Value> {
+        Ok(value)
+    }
+
+    fn generate_interface(&mut self, value: Value) -> Result<Value> {
+        Ok(value)
+    }
+
+    fn generate_defs(&mut self, value: Value) -> Result<Value> {
+        Ok(value)
+    }
 }
 
-impl Generator {
-    fn new() -> Self {
+struct NullGenerator;
+
+impl LangGenerator for NullGenerator {}
+
+struct Generator<'g> {
+    resolver: Resolver,
+    loader: Loader,
+    lang: &'g mut LangGenerator,
+}
+
+impl<'g> Generator<'g> {
+    fn new(lang: &'g mut LangGenerator) -> Self {
         Self {
             resolver: Resolver::new(),
             loader: Loader::new(),
+            lang,
         }
     }
 
@@ -415,10 +459,10 @@ impl Generator {
             }
         }
 
-        Ok(json!({
+        Ok(self.lang.generate_defs(json!({
             "uses": uses,
             "nodes": nodes,
-        }))
+        }))?)
     }
 
     fn generate_use(&mut self, p: Pair<Rule>) -> Result<Value> {
@@ -441,10 +485,10 @@ impl Generator {
             .chain_err(|| error(&path))
             .chain_err(|| load_error(&p, &fullpath))?;
 
-        Ok(json!({
+        Ok(self.lang.generate_use(json!({
             "namespace": ns,
             "path": path,
-        }))
+        }))?)
     }
 
     fn generate_struct<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Value)> {
@@ -462,12 +506,12 @@ impl Generator {
 
             checker.check(&ident)?;
 
-            fields.push(json!({
+            fields.push(self.lang.generate_field(json!({
                 "comment": comment,
                 "name": ident.as_str(),
                 "type": self.resolver.resolve_generic_type(&gty)?,
                 "value": value,
-            }));
+            }))?);
         }
 
         let comment = get_comment(&p);
@@ -475,12 +519,12 @@ impl Generator {
 
         Ok((
             ident.clone(),
-            json!({
+            self.lang.generate_struct(json!({
                 "comment" : comment,
                 "name": ident.as_str(),
                 "type": "struct",
                 "fields": fields,
-            }),
+            }))?,
         ))
     }
 
@@ -500,12 +544,12 @@ impl Generator {
 
             checker.check(&ident)?;
 
-            fields.push(json!({
+            fields.push(self.lang.generate_variant(json!({
                 "comment": comment,
                 "name": ident.as_str(),
                 "type": self.resolver.resolve_type(&uty)?,
                 "value": value,
-            }));
+            }))?);
         }
 
         let comment = get_comment(&p);
@@ -513,12 +557,12 @@ impl Generator {
 
         Ok((
             ident.clone(),
-            json!({
+            self.lang.generate_enum(json!({
                 "comment" : comment,
                 "name": ident.as_str(),
                 "type": self.resolver.resolve_type(&uty)?,
                 "fields": fields,
-            }),
+            }))?,
         ))
     }
 
@@ -544,10 +588,10 @@ impl Generator {
 
                 arg_checker.check(&ident)?;
 
-                args.push(json!({
+                args.push(self.lang.generate_arg(json!({
                     "name": ident.as_str(),
                     "type": self.resolver.resolve_type(&ty)?,
-                }));
+                }))?);
             }
 
             let r = get_opt(&f, Rule::ReturnType);
@@ -563,12 +607,12 @@ impl Generator {
                 None
             };
 
-            funcs.push(json!({
+            funcs.push(self.lang.generate_func(json!({
                 "comment": comment,
                 "name": ident.as_str(),
                 "args": args,
                 "return": r,
-            }));
+            }))?);
         }
 
         let comment = get_comment(&p);
@@ -577,19 +621,20 @@ impl Generator {
 
         Ok((
             ident.clone(),
-            json!({
+            self.lang.generate_interface(json!({
                 "comment" : comment,
                 "name": ident.as_str(),
                 "pattern": pattern,
                 "type": "interface",
                 "funcs": funcs,
-            }),
+            }))?,
         ))
     }
 }
 
 pub fn compile(path: &str) -> Result<Value> {
-    let mut gen = Generator::new();
+    let mut nullgen = NullGenerator;
+    let mut gen = Generator::new(&mut nullgen);
 
     let cwd = std::env::current_dir().map_err(|e| file_error(e))?;
     let fullpath = format!("{}/{}", cwd.to_string_lossy(), path);
