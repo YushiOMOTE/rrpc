@@ -561,10 +561,6 @@ fn generate_interface<'a>(
     ))
 }
 
-pub fn run() {
-    let j = match generate("examples/init.rpc") {
-        Ok(j) => j,
-        Err(e) => return error!("{}", e.display_chain().to_string()),
-    };
-    println!("{}", serde_json::to_string_pretty(&j).unwrap());
+pub fn compile(path: &str) -> Result<Value> {
+    generate(&path)
 }
