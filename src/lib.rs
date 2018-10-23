@@ -236,34 +236,22 @@ impl Loader {
     }
 }
 
+fn primitive(resolver: &mut Resolver, lang: &mut LangGenerator, ident: &str, tt: Trait) {
+    resolver.add_type(
+        ident.into(),
+        lang.generate_primitive(Primitive::new(ident, tt)),
+    );
+}
+
 struct Resolver {
     types: HashMap<String, Type>,
     namespace: Vec<String>,
 }
 
-fn primitive(types: &mut HashMap<String, Type>, name: &str) {
-    types.insert(name.into(), Primitive::new(name, Trait::Integer).into());
-}
-
 impl Resolver {
     fn new() -> Self {
-        let mut types = HashMap::new();
-
-        primitive(&mut types, "bool");
-        primitive(&mut types, "u8");
-        primitive(&mut types, "u16");
-        primitive(&mut types, "u32");
-        primitive(&mut types, "u64");
-        primitive(&mut types, "i8");
-        primitive(&mut types, "i16");
-        primitive(&mut types, "i32");
-        primitive(&mut types, "i64");
-        primitive(&mut types, "f32");
-        primitive(&mut types, "f64");
-        primitive(&mut types, "string");
-
         Self {
-            types,
+            types: HashMap::new(),
             namespace: Vec::new(),
         }
     }
@@ -336,6 +324,10 @@ fn parse_value(p: &Pair<Rule>) -> Result<Option<Value>> {
 }
 
 pub trait LangGenerator {
+    fn generate_primitive(&mut self, value: Primitive) -> Primitive {
+        value
+    }
+
     fn generate_use(&mut self, value: Use) -> Result<Use> {
         Ok(value)
     }
@@ -385,8 +377,23 @@ struct Generator<'g> {
 
 impl<'g> Generator<'g> {
     fn new(lang: &'g mut LangGenerator) -> Self {
+        let mut resolver = Resolver::new();
+
+        primitive(&mut resolver, lang, "bool", Trait::Bool);
+        primitive(&mut resolver, lang, "u8", Trait::Integer);
+        primitive(&mut resolver, lang, "u16", Trait::Integer);
+        primitive(&mut resolver, lang, "u32", Trait::Integer);
+        primitive(&mut resolver, lang, "u64", Trait::Integer);
+        primitive(&mut resolver, lang, "i8", Trait::Integer);
+        primitive(&mut resolver, lang, "i16", Trait::Integer);
+        primitive(&mut resolver, lang, "i32", Trait::Integer);
+        primitive(&mut resolver, lang, "i64", Trait::Integer);
+        primitive(&mut resolver, lang, "f32", Trait::Float);
+        primitive(&mut resolver, lang, "f64", Trait::Float);
+        primitive(&mut resolver, lang, "string", Trait::String);
+
         Self {
-            resolver: Resolver::new(),
+            resolver,
             loader: Loader::new(),
             lang,
         }
