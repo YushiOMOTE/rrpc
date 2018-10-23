@@ -435,8 +435,7 @@ impl<'g> Generator<'g> {
         let mut uses = Vec::new();
         let mut nodes = Vec::new();
 
-        let mut ty_checker = DupChecker::new("type name");
-        let mut if_checker = DupChecker::new("interface name");
+        let mut checker = DupChecker::new("type name");
 
         for p in pairs {
             match p.as_rule() {
@@ -446,7 +445,7 @@ impl<'g> Generator<'g> {
                 Rule::Struct => {
                     let (ident, value) = self.generate_struct(p)?;
 
-                    ty_checker.check(&ident)?;
+                    checker.check(&ident)?;
 
                     self.resolver.add_type(ident.as_str(), value.clone());
 
@@ -455,7 +454,7 @@ impl<'g> Generator<'g> {
                 Rule::Enum => {
                     let (ident, value) = self.generate_enum(p)?;
 
-                    ty_checker.check(&ident)?;
+                    checker.check(&ident)?;
 
                     self.resolver.add_type(ident.as_str(), value.clone());
 
@@ -464,7 +463,7 @@ impl<'g> Generator<'g> {
                 Rule::Interface => {
                     let (ident, value) = self.generate_interface(p)?;
 
-                    if_checker.check(&ident)?;
+                    checker.check(&ident)?;
 
                     nodes.push(Node::Interface(value));
                 }
