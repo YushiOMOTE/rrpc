@@ -261,7 +261,7 @@ impl Resolver {
 
         self.types
             .get(path.as_str())
-            .map(|p| p.clone())
+            .map(|p| p.namespaced(path.as_str()))
             .ok_or(type_not_found(path))
     }
 

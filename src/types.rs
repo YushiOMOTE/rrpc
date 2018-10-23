@@ -1,8 +1,15 @@
 use serde_json::value::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Type {
+    namespace: String,
+    #[serde(flatten)]
+    info: TypeInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum Type {
+pub enum TypeInfo {
     Primitive(Primitive),
     Struct(Struct),
     Enum(Enum),
@@ -11,25 +18,49 @@ pub enum Type {
 
 impl From<Primitive> for Type {
     fn from(p: Primitive) -> Type {
-        Type::Primitive(p)
+        Type {
+            namespace: "".into(),
+            info: TypeInfo::Primitive(p),
+        }
     }
 }
 
 impl From<Struct> for Type {
     fn from(p: Struct) -> Type {
-        Type::Struct(p)
+        Type {
+            namespace: "".into(),
+            info: TypeInfo::Struct(p),
+        }
     }
 }
 
 impl From<Enum> for Type {
     fn from(p: Enum) -> Type {
-        Type::Enum(p)
+        Type {
+            namespace: "".into(),
+            info: TypeInfo::Enum(p),
+        }
     }
 }
 
 impl From<Template> for Type {
     fn from(p: Template) -> Type {
-        Type::Template(p)
+        Type {
+            namespace: "".into(),
+            info: TypeInfo::Template(p),
+        }
+    }
+}
+
+impl Type {
+    pub fn namespaced(&self, path: &str) -> Type {
+        let mut ns = path.split("::").collect::<Vec<_>>();
+        ns.pop();
+
+        Type {
+            namespace: ns.join("::"),
+            info: self.info.clone(),
+        }
     }
 }
 
