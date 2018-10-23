@@ -4,6 +4,7 @@ extern crate pest_derive;
 extern crate serde;
 #[macro_use]
 extern crate serde_json;
+#[macro_use]
 extern crate serde_derive;
 #[macro_use]
 extern crate error_chain;
@@ -25,6 +26,10 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use serde_json::value::Value;
+
+mod types;
+
+use self::types::*;
 
 fn get<'a>(p: &Pair<'a, Rule>, rule: Rule) -> Pair<'a, Rule> {
     match get_opt(p, rule) {
@@ -93,6 +98,11 @@ error_chain! {
             description("compile error")
                 display("{}", e)
         }
+
+        PackError(e: serde_json::error::Error) {
+            description("compile error")
+                display("{}", e)
+        }
     }
 }
 
@@ -142,6 +152,10 @@ fn duplicated(name: &str, p: &Pair<Rule>) -> Error {
 
 fn parse_error(e: PestError<Rule>) -> Error {
     ErrorKind::ParseError(e).into()
+}
+
+fn pack_error(e: serde_json::error::Error) -> Error {
+    ErrorKind::PackError(e).into()
 }
 
 struct DupChecker<'a> {
@@ -223,18 +237,12 @@ impl Loader {
 }
 
 struct Resolver {
-    types: HashMap<String, Value>,
+    types: HashMap<String, Type>,
     namespace: Vec<String>,
 }
 
-fn primitive(types: &mut HashMap<String, Value>, name: &str) {
-    types.insert(
-        name.into(),
-        json!({
-        "name": name,
-        "type": "primitive",
-    }),
-    );
+fn primitive(types: &mut HashMap<String, Type>, name: &str) {
+    types.insert(name.into(), Primitive::new(name, Trait::Integer).into());
 }
 
 impl Resolver {
@@ -260,7 +268,7 @@ impl Resolver {
         }
     }
 
-    fn resolve_type(&self, path: &Pair<Rule>) -> Result<Value> {
+    fn resolve_type(&self, path: &Pair<Rule>) -> Result<Type> {
         debug!("Lookup type: {}", path.as_str());
 
         self.types
@@ -269,7 +277,7 @@ impl Resolver {
             .ok_or(type_not_found(path))
     }
 
-    fn resolve_generic_type(&self, p: &Pair<Rule>) -> Result<Value> {
+    fn resolve_generic_type(&self, p: &Pair<Rule>) -> Result<Type> {
         match get_opt(&p, Rule::Template) {
             Some(template) => {
                 let mut tys = Vec::new();
@@ -280,11 +288,7 @@ impl Resolver {
 
                 let ident = get(&template, Rule::Identifier).as_str();
 
-                Ok(json!({
-                    "name": ident,
-                    "type": "template",
-                    "subtypes": tys,
-                }))
+                Ok(Template::new(ident, tys).into())
             }
             None => {
                 let ty = get(&p, Rule::Type);
@@ -293,7 +297,10 @@ impl Resolver {
         }
     }
 
-    fn add_type(&mut self, ident: &str, value: Value) {
+    fn add_type<T>(&mut self, ident: &str, ty: T)
+    where
+        T: Into<Type>,
+    {
         let path = match self.namespace.last() {
             Some(namespace) => format!("{}::{}", namespace, ident),
             None => ident.to_string(),
@@ -301,7 +308,7 @@ impl Resolver {
 
         debug!("Add type: {}", path);
 
-        self.types.insert(path, value);
+        self.types.insert(path, ty.into());
     }
 
     fn enter_ns(&mut self, module: &str) {
@@ -329,39 +336,39 @@ fn parse_value(p: &Pair<Rule>) -> Result<Option<Value>> {
 }
 
 pub trait LangGenerator {
-    fn generate_use(&mut self, value: Value) -> Result<Value> {
+    fn generate_use(&mut self, value: Use) -> Result<Use> {
         Ok(value)
     }
 
-    fn generate_field(&mut self, value: Value) -> Result<Value> {
+    fn generate_field(&mut self, value: Field) -> Result<Field> {
         Ok(value)
     }
 
-    fn generate_enum(&mut self, value: Value) -> Result<Value> {
+    fn generate_enum(&mut self, value: Enum) -> Result<Enum> {
         Ok(value)
     }
 
-    fn generate_variant(&mut self, value: Value) -> Result<Value> {
+    fn generate_variant(&mut self, value: Variant) -> Result<Variant> {
         Ok(value)
     }
 
-    fn generate_arg(&mut self, value: Value) -> Result<Value> {
+    fn generate_arg(&mut self, value: Arg) -> Result<Arg> {
         Ok(value)
     }
 
-    fn generate_struct(&mut self, value: Value) -> Result<Value> {
+    fn generate_struct(&mut self, value: Struct) -> Result<Struct> {
         Ok(value)
     }
 
-    fn generate_func(&mut self, value: Value) -> Result<Value> {
+    fn generate_func(&mut self, value: Func) -> Result<Func> {
         Ok(value)
     }
 
-    fn generate_interface(&mut self, value: Value) -> Result<Value> {
+    fn generate_interface(&mut self, value: Interface) -> Result<Interface> {
         Ok(value)
     }
 
-    fn generate_defs(&mut self, value: Value) -> Result<Value> {
+    fn generate_defs(&mut self, value: Defs) -> Result<Defs> {
         Ok(value)
     }
 }
@@ -385,7 +392,7 @@ impl<'g> Generator<'g> {
         }
     }
 
-    fn generate(&mut self, path: &str) -> Result<Value> {
+    fn generate(&mut self, path: &str) -> Result<Defs> {
         debug!("Generating from {}", path);
 
         let contents = self.loader.load(path)?;
@@ -417,7 +424,7 @@ impl<'g> Generator<'g> {
         Ok(())
     }
 
-    fn generate_defs(&mut self, pairs: Pairs<Rule>) -> Result<Value> {
+    fn generate_defs(&mut self, pairs: Pairs<Rule>) -> Result<Defs> {
         let mut uses = Vec::new();
         let mut nodes = Vec::new();
 
@@ -436,7 +443,7 @@ impl<'g> Generator<'g> {
 
                     self.resolver.add_type(ident.as_str(), value.clone());
 
-                    nodes.push(value);
+                    nodes.push(Node::Struct(value));
                 }
                 Rule::Enum => {
                     let (ident, value) = self.generate_enum(p)?;
@@ -445,27 +452,24 @@ impl<'g> Generator<'g> {
 
                     self.resolver.add_type(ident.as_str(), value.clone());
 
-                    nodes.push(value);
+                    nodes.push(Node::Enum(value));
                 }
                 Rule::Interface => {
                     let (ident, value) = self.generate_interface(p)?;
 
                     if_checker.check(&ident)?;
 
-                    nodes.push(value);
+                    nodes.push(Node::Interface(value));
                 }
                 Rule::EOI => {}
                 _ => unreachable!("unexpected token {:?}", p),
             }
         }
 
-        Ok(self.lang.generate_defs(json!({
-            "uses": uses,
-            "nodes": nodes,
-        }))?)
+        Ok(self.lang.generate_defs(Defs::new(uses, nodes))?)
     }
 
-    fn generate_use(&mut self, p: Pair<Rule>) -> Result<Value> {
+    fn generate_use(&mut self, p: Pair<Rule>) -> Result<Use> {
         trace!("Generating use: {}", p.as_str());
 
         let path = get_all(&p, Rule::Path);
@@ -485,13 +489,10 @@ impl<'g> Generator<'g> {
             .chain_err(|| error(&path))
             .chain_err(|| load_error(&p, &fullpath))?;
 
-        Ok(self.lang.generate_use(json!({
-            "namespace": ns,
-            "path": path,
-        }))?)
+        Ok(self.lang.generate_use(Use::new(&ns, &path))?)
     }
 
-    fn generate_struct<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Value)> {
+    fn generate_struct<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Struct)> {
         trace!("Generating struct:\n {}", p.as_str());
 
         let mut checker = DupChecker::new("struct member name");
@@ -506,12 +507,12 @@ impl<'g> Generator<'g> {
 
             checker.check(&ident)?;
 
-            fields.push(self.lang.generate_field(json!({
-                "comment": comment,
-                "name": ident.as_str(),
-                "type": self.resolver.resolve_generic_type(&gty)?,
-                "value": value,
-            }))?);
+            fields.push(self.lang.generate_field(Field::new(
+                comment,
+                ident.as_str(),
+                self.resolver.resolve_generic_type(&gty)?,
+                value,
+            ))?);
         }
 
         let comment = get_comment(&p);
@@ -519,21 +520,17 @@ impl<'g> Generator<'g> {
 
         Ok((
             ident.clone(),
-            self.lang.generate_struct(json!({
-                "comment" : comment,
-                "name": ident.as_str(),
-                "type": "struct",
-                "fields": fields,
-            }))?,
+            self.lang
+                .generate_struct(Struct::new(comment, ident.as_str(), fields))?,
         ))
     }
 
-    fn generate_enum<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Value)> {
+    fn generate_enum<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Enum)> {
         trace!("Generating enum:\n {}", p.as_str());
 
         let mut checker = DupChecker::new("enum variant name");
 
-        let mut fields = Vec::new();
+        let mut variants = Vec::new();
 
         let uty = get(&p, Rule::Type);
 
@@ -544,12 +541,12 @@ impl<'g> Generator<'g> {
 
             checker.check(&ident)?;
 
-            fields.push(self.lang.generate_variant(json!({
-                "comment": comment,
-                "name": ident.as_str(),
-                "type": self.resolver.resolve_type(&uty)?,
-                "value": value,
-            }))?);
+            variants.push(self.lang.generate_variant(Variant::new(
+                comment,
+                ident.as_str(),
+                self.resolver.resolve_type(&uty)?,
+                value,
+            ))?);
         }
 
         let comment = get_comment(&p);
@@ -557,16 +554,16 @@ impl<'g> Generator<'g> {
 
         Ok((
             ident.clone(),
-            self.lang.generate_enum(json!({
-                "comment" : comment,
-                "name": ident.as_str(),
-                "type": self.resolver.resolve_type(&uty)?,
-                "fields": fields,
-            }))?,
+            self.lang.generate_enum(Enum::new(
+                comment,
+                ident.as_str(),
+                self.resolver.resolve_type(&uty)?,
+                variants,
+            ))?,
         ))
     }
 
-    fn generate_interface<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Value)> {
+    fn generate_interface<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Interface)> {
         trace!("Generating interface:\n {}", p.as_str());
 
         let mut funcs = Vec::new();
@@ -588,10 +585,8 @@ impl<'g> Generator<'g> {
 
                 arg_checker.check(&ident)?;
 
-                args.push(self.lang.generate_arg(json!({
-                    "name": ident.as_str(),
-                    "type": self.resolver.resolve_type(&ty)?,
-                }))?);
+                args.push(self.lang
+                    .generate_arg(Arg::new(ident.as_str(), self.resolver.resolve_type(&ty)?))?);
             }
 
             let r = get_opt(&f, Rule::ReturnType);
@@ -599,7 +594,7 @@ impl<'g> Generator<'g> {
                 let mut rs = Vec::new();
 
                 for ty in get_all(&r, Rule::Type) {
-                    rs.push(json!(ty.as_str()));
+                    rs.push(self.resolver.resolve_type(&ty)?);
                 }
 
                 Some(rs)
@@ -607,12 +602,12 @@ impl<'g> Generator<'g> {
                 None
             };
 
-            funcs.push(self.lang.generate_func(json!({
-                "comment": comment,
-                "name": ident.as_str(),
-                "args": args,
-                "return": r,
-            }))?);
+            funcs.push(self.lang.generate_func(Func::new(
+                comment,
+                ident.as_str(),
+                args,
+                r.unwrap_or(Vec::new()),
+            ))?);
         }
 
         let comment = get_comment(&p);
@@ -621,13 +616,8 @@ impl<'g> Generator<'g> {
 
         Ok((
             ident.clone(),
-            self.lang.generate_interface(json!({
-                "comment" : comment,
-                "name": ident.as_str(),
-                "pattern": pattern,
-                "type": "interface",
-                "funcs": funcs,
-            }))?,
+            self.lang
+                .generate_interface(Interface::new(comment, ident.as_str(), &pattern, funcs))?,
         ))
     }
 }
@@ -639,5 +629,7 @@ pub fn compile(path: &str) -> Result<Value> {
     let cwd = std::env::current_dir().map_err(|e| file_error(e))?;
     let fullpath = format!("{}/{}", cwd.to_string_lossy(), path);
 
-    gen.generate(path).chain_err(|| error(&fullpath))
+    let model = gen.generate(path).chain_err(|| error(&fullpath))?;
+
+    serde_json::to_value(model).map_err(|e| pack_error(e))
 }

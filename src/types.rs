@@ -9,8 +9,32 @@ pub enum Type {
     Template(Template),
 }
 
+impl From<Primitive> for Type {
+    fn from(p: Primitive) -> Type {
+        Type::Primitive(p)
+    }
+}
+
+impl From<Struct> for Type {
+    fn from(p: Struct) -> Type {
+        Type::Struct(p)
+    }
+}
+
+impl From<Enum> for Type {
+    fn from(p: Enum) -> Type {
+        Type::Enum(p)
+    }
+}
+
+impl From<Template> for Type {
+    fn from(p: Template) -> Type {
+        Type::Template(p)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(rename_all = "snake_case")]
 pub enum Trait {
     Bool,
     Integer,
@@ -19,6 +43,7 @@ pub enum Trait {
     Struct,
     Enum,
     Template,
+    Interface,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,7 +67,7 @@ impl Primitive {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Struct {
-    pub comment: String,
+    pub comment: Option<String>,
     pub name: String,
     #[serde(rename = "trait")]
     pub tt: Trait,
@@ -52,11 +77,11 @@ pub struct Struct {
 }
 
 impl Struct {
-    pub fn new(comment: &str, name: &str, tt: Trait, members: Vec<Field>) -> Self {
+    pub fn new(comment: Option<&str>, name: &str, members: Vec<Field>) -> Self {
         Self {
-            comment: comment.into(),
+            comment: comment.map(|s| s.into()),
             name: name.into(),
-            tt,
+            tt: Trait::Struct,
             members,
             custom: json!({}),
         }
@@ -65,7 +90,7 @@ impl Struct {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Field {
-    pub comment: String,
+    pub comment: Option<String>,
     pub name: String,
     #[serde(rename = "type")]
     pub ty: Type,
@@ -75,9 +100,9 @@ pub struct Field {
 }
 
 impl Field {
-    pub fn new(comment: &str, name: &str, ty: Type, value: Option<Value>) -> Self {
+    pub fn new(comment: Option<&str>, name: &str, ty: Type, value: Option<Value>) -> Self {
         Self {
-            comment: comment.into(),
+            comment: comment.map(|s| s.into()),
             name: name.into(),
             ty,
             value,
@@ -88,7 +113,7 @@ impl Field {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Enum {
-    pub comment: String,
+    pub comment: Option<String>,
     pub name: String,
     pub utype: Box<Type>,
     #[serde(rename = "trait")]
@@ -99,12 +124,12 @@ pub struct Enum {
 }
 
 impl Enum {
-    pub fn new(comment: &str, name: &str, utype: Type, tt: Trait, members: Vec<Variant>) -> Self {
+    pub fn new(comment: Option<&str>, name: &str, utype: Type, members: Vec<Variant>) -> Self {
         Self {
-            comment: comment.into(),
+            comment: comment.map(|s| s.into()),
             name: name.into(),
             utype: Box::new(utype),
-            tt,
+            tt: Trait::Enum,
             members,
             custom: json!({}),
         }
@@ -113,7 +138,7 @@ impl Enum {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Variant {
-    pub comment: String,
+    pub comment: Option<String>,
     pub name: String,
     #[serde(rename = "type")]
     pub ty: Type,
@@ -123,9 +148,9 @@ pub struct Variant {
 }
 
 impl Variant {
-    pub fn new(comment: &str, name: &str, ty: Type, value: Option<Value>) -> Self {
+    pub fn new(comment: Option<&str>, name: &str, ty: Type, value: Option<Value>) -> Self {
         Self {
-            comment: comment.into(),
+            comment: comment.map(|s| s.into()),
             name: name.into(),
             ty,
             value,
@@ -136,7 +161,7 @@ impl Variant {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Interface {
-    pub comment: String,
+    pub comment: Option<String>,
     pub name: String,
     pub pattern: String,
     #[serde(rename = "trait")]
@@ -147,12 +172,12 @@ pub struct Interface {
 }
 
 impl Interface {
-    pub fn new(comment: &str, name: &str, pattern: &str, tt: Trait, funcs: Vec<Func>) -> Self {
+    pub fn new(comment: Option<&str>, name: &str, pattern: &str, funcs: Vec<Func>) -> Self {
         Self {
-            comment: comment.into(),
+            comment: comment.map(|s| s.into()),
             name: name.into(),
             pattern: pattern.into(),
-            tt,
+            tt: Trait::Interface,
             funcs,
             custom: json!({}),
         }
@@ -161,7 +186,7 @@ impl Interface {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Func {
-    pub comment: String,
+    pub comment: Option<String>,
     pub name: String,
     pub args: Vec<Arg>,
     pub ret: Vec<Type>,
@@ -170,9 +195,9 @@ pub struct Func {
 }
 
 impl Func {
-    pub fn new(comment: &str, name: &str, args: Vec<Arg>, ret: Vec<Type>) -> Self {
+    pub fn new(comment: Option<&str>, name: &str, args: Vec<Arg>, ret: Vec<Type>) -> Self {
         Self {
-            comment: comment.into(),
+            comment: comment.map(|s| s.into()),
             name: name.into(),
             args,
             ret,
@@ -211,10 +236,10 @@ pub struct Template {
 }
 
 impl Template {
-    pub fn new(name: &str, tt: Trait, params: Vec<Type>) -> Self {
+    pub fn new(name: &str, params: Vec<Type>) -> Self {
         Self {
             name: name.into(),
-            tt,
+            tt: Trait::Template,
             params,
             custom: json!({}),
         }
@@ -248,10 +273,10 @@ pub struct Use {
 }
 
 impl Use {
-    pub fn new(namespace: String, path: String) -> Self {
+    pub fn new(namespace: &str, path: &str) -> Self {
         Self {
-            namespace,
-            path,
+            namespace: namespace.into(),
+            path: path.into(),
             custom: json!({}),
         }
     }
