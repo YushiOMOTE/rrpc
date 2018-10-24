@@ -177,19 +177,7 @@ impl<'g> Generator<'g> {
         let mut fields = Vec::new();
 
         for f in get_all(&p, Rule::Field) {
-            let comment = get_comment(&f);
-            let ident = get(&f, Rule::Identifier);
-            let gty = get(&f, Rule::GenericType);
-            let value = parse_value(&f)?;
-
-            checker.check(&ident)?;
-
-            fields.push(self.lang.generate_field(Field::new(
-                comment,
-                ident.as_str(),
-                self.resolver.resolve_generic_type(&gty)?,
-                value,
-            ))?);
+            fields.push(self.generate_field(f, &mut checker)?);
         }
 
         let comment = get_comment(&p);
@@ -202,6 +190,22 @@ impl<'g> Generator<'g> {
         ))
     }
 
+    fn generate_field<'a>(&mut self, p: Pair<'a, Rule>, checker: &mut DupChecker) -> Result<Field> {
+        let comment = get_comment(&p);
+        let ident = get(&p, Rule::Identifier);
+        let gty = get(&p, Rule::GenericType);
+        let value = parse_value(&p)?;
+
+        checker.check(&ident)?;
+
+        Ok(self.lang.generate_field(Field::new(
+            comment,
+            ident.as_str(),
+            self.resolver.resolve_generic_type(&gty)?,
+            value,
+        ))?)
+    }
+
     fn generate_enum<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Enum)> {
         trace!("Generating enum:\n {}", p.as_str());
 
@@ -212,18 +216,7 @@ impl<'g> Generator<'g> {
         let uty = get(&p, Rule::Type);
 
         for f in get_all(&p, Rule::Variant) {
-            let comment = get_comment(&f);
-            let ident = get(&f, Rule::Identifier);
-            let value = parse_value(&f)?;
-
-            checker.check(&ident)?;
-
-            variants.push(self.lang.generate_variant(Variant::new(
-                comment,
-                ident.as_str(),
-                self.resolver.resolve_type(&uty)?,
-                value,
-            ))?);
+            variants.push(self.generate_variant(f, &uty, &mut checker)?);
         }
 
         let comment = get_comment(&p);
@@ -240,6 +233,26 @@ impl<'g> Generator<'g> {
         ))
     }
 
+    fn generate_variant<'a>(
+        &mut self,
+        p: Pair<'a, Rule>,
+        uty: &Pair<'a, Rule>,
+        checker: &mut DupChecker,
+    ) -> Result<Variant> {
+        let comment = get_comment(&p);
+        let ident = get(&p, Rule::Identifier);
+        let value = parse_value(&p)?;
+
+        checker.check(&ident)?;
+
+        Ok(self.lang.generate_variant(Variant::new(
+            comment,
+            ident.as_str(),
+            self.resolver.resolve_type(uty)?,
+            value,
+        ))?)
+    }
+
     fn generate_interface<'a>(&mut self, p: Pair<'a, Rule>) -> Result<(Pair<'a, Rule>, Interface)> {
         trace!("Generating interface:\n {}", p.as_str());
 
@@ -248,43 +261,7 @@ impl<'g> Generator<'g> {
         let mut checker = DupChecker::new("function name");
 
         for f in get_all(&p, Rule::Function) {
-            let comment = get_comment(&p);
-            let ident = get(&f, Rule::Identifier);
-            let mut args = Vec::new();
-
-            checker.check(&ident)?;
-
-            let mut arg_checker = DupChecker::new("argument name");
-
-            for a in get_all(&f, Rule::Argument) {
-                let ident = get(&a, Rule::Identifier);
-                let ty = get(&a, Rule::Type);
-
-                arg_checker.check(&ident)?;
-
-                args.push(self.lang
-                    .generate_arg(Arg::new(ident.as_str(), self.resolver.resolve_type(&ty)?))?);
-            }
-
-            let r = get_opt(&f, Rule::ReturnType);
-            let r = if let Some(r) = r {
-                let mut rs = Vec::new();
-
-                for ty in get_all(&r, Rule::Type) {
-                    rs.push(self.resolver.resolve_type(&ty)?);
-                }
-
-                Some(rs)
-            } else {
-                None
-            };
-
-            funcs.push(self.lang.generate_func(Func::new(
-                comment,
-                ident.as_str(),
-                args,
-                r.unwrap_or(Vec::new()),
-            ))?);
+            funcs.push(self.generate_func(f, &mut checker)?);
         }
 
         let comment = get_comment(&p);
@@ -296,5 +273,49 @@ impl<'g> Generator<'g> {
             self.lang
                 .generate_interface(Interface::new(comment, ident.as_str(), &pattern, funcs))?,
         ))
+    }
+
+    fn generate_arg<'a>(&mut self, p: Pair<'a, Rule>, checker: &mut DupChecker) -> Result<Arg> {
+        let ident = get(&p, Rule::Identifier);
+        let ty = get(&p, Rule::Type);
+
+        checker.check(&ident)?;
+
+        Ok(self.lang
+            .generate_arg(Arg::new(ident.as_str(), self.resolver.resolve_type(&ty)?))?)
+    }
+
+    fn generate_func<'a>(&mut self, p: Pair<'a, Rule>, checker: &mut DupChecker) -> Result<Func> {
+        let comment = get_comment(&p);
+        let ident = get(&p, Rule::Identifier);
+        let mut args = Vec::new();
+
+        checker.check(&ident)?;
+
+        let mut arg_checker = DupChecker::new("argument name");
+
+        for a in get_all(&p, Rule::Argument) {
+            args.push(self.generate_arg(a, &mut arg_checker)?);
+        }
+
+        let r = get_opt(&p, Rule::ReturnType);
+        let r = if let Some(r) = r {
+            let mut rs = Vec::new();
+
+            for ty in get_all(&r, Rule::Type) {
+                rs.push(self.resolver.resolve_type(&ty)?);
+            }
+
+            Some(rs)
+        } else {
+            None
+        };
+
+        Ok(self.lang.generate_func(Func::new(
+            comment,
+            ident.as_str(),
+            args,
+            r.unwrap_or(Vec::new()),
+        ))?)
     }
 }
