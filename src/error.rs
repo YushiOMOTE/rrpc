@@ -1,5 +1,7 @@
 use pest::error::{Error as PestError, ErrorVariant};
 use pest::iterators::Pair;
+use tera::Error as TeraError;
+use error_chain::ChainedError;
 
 use super::parser::Rule;
 
@@ -43,6 +45,11 @@ error_chain! {
         PackError(e: serde_json::error::Error) {
             description("compile error")
                 display("{}", e)
+        }
+
+        RenderError(e: TeraError) {
+            description("compile error")
+                display("{}", e.display_chain().to_string())
         }
     }
 }
@@ -97,4 +104,8 @@ pub fn parse_error(e: PestError<Rule>) -> Error {
 
 pub fn pack_error(e: serde_json::error::Error) -> Error {
     ErrorKind::PackError(e).into()
+}
+
+pub fn render_error(e: TeraError) -> Error {
+    ErrorKind::RenderError(e).into()
 }
