@@ -1,5 +1,9 @@
-use super::Result;
-use super::types::*;
+use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+
+use crate::Result;
+use crate::types::*;
+use crate::error;
 
 pub trait LangGenerator {
     fn generate_primitive(&mut self, value: Primitive) -> Primitive {
@@ -46,3 +50,32 @@ pub trait LangGenerator {
 mod null;
 
 pub use self::null::NullGenerator;
+
+type Gen = Arc<Mutex<LangGenerator + Send + Sync>>;
+type GenTable = HashMap<String, Gen>;
+
+lazy_static! {
+    pub static ref LANG_GENERATORS: Arc<Mutex<GenTable>> = {
+        let mut map = GenTable::new();
+
+        map.insert("null".into(), Arc::new(Mutex::new(NullGenerator)));
+
+        Arc::new(Mutex::new(map))
+    };
+}
+
+pub fn register_generator<T: LangGenerator + Send + Sync + 'static>(key: &str, gen: T) {
+    LANG_GENERATORS
+        .lock()
+        .unwrap()
+        .insert(key.into(), Arc::new(Mutex::new(gen)));
+}
+
+pub fn get_generator(key: &str) -> Result<Gen> {
+    LANG_GENERATORS
+        .lock()
+        .unwrap()
+        .get(key)
+        .map(|v| v.clone())
+        .ok_or(error::generator_not_found(key))
+}

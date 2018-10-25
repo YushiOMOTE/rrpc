@@ -12,6 +12,8 @@ extern crate error_chain;
 extern crate log;
 #[macro_use]
 extern crate tera;
+#[macro_use]
+extern crate lazy_static;
 
 mod types;
 mod loader;
@@ -25,13 +27,17 @@ mod utils;
 
 use serde_json::to_string_pretty;
 
-use self::error::{Result, ResultExt};
-use self::generator::Generator;
-use self::lang::NullGenerator;
+use crate::error::{Result, ResultExt};
+use crate::generator::Generator;
 
-pub fn compile(path: &str, tpath: &str) -> Result<String> {
-    let mut nullgen = NullGenerator;
-    let mut gen = Generator::new(&mut nullgen);
+pub use crate::types::*;
+pub use crate::lang::{register_generator, LangGenerator};
+use crate::lang::get_generator;
+
+pub fn compile(gen: &str, path: &str, tpath: &str) -> Result<String> {
+    let langgen = get_generator(gen)?;
+    let mut langgen = langgen.lock().unwrap();
+    let mut gen = Generator::new(&mut *langgen);
 
     let fullpath = utils::fullpath(path)?;
     let model = gen.generate(path).chain_err(|| error::error(&fullpath))?;

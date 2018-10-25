@@ -51,6 +51,11 @@ error_chain! {
             description("compile error")
                 display("{}", e.display_chain().to_string())
         }
+
+        GeneratorNotFound(e: String) {
+            description("config error")
+                display("{}", e)
+        }
     }
 }
 
@@ -108,4 +113,8 @@ pub fn pack_error(e: serde_json::error::Error) -> Error {
 
 pub fn render_error(e: TeraError) -> Error {
     ErrorKind::RenderError(e).into()
+}
+
+pub fn generator_not_found(e: &str) -> Error {
+    ErrorKind::GeneratorNotFound(format!("Generator not found: {}", e)).into()
 }
